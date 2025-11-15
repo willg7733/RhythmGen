@@ -1,1 +1,6 @@
+pytube
+librosa
+numpy
+pygame
+soundfile
 
