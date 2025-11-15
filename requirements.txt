@@ -1,6 +1,5 @@
-pytube
+yt_dlp
 librosa
 numpy
 pygame
 soundfile
-
