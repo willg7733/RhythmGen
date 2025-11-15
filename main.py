@@ -4,6 +4,7 @@ from game import RhythmGame
 
 def main():
     url = input("Paste YouTube link: ")
+    print("Downloading audio...")
     audio = download_audio(url, "audio.mp3")
 
     print("Generating beatmap...")
