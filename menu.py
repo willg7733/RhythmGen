@@ -2,6 +2,7 @@ import os
 os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 import pygame
 import sys
+import threading
 from youtube import suggest_youtube_videos
 
 # Window dimensions
@@ -56,6 +57,7 @@ class MainMenu:
         self.selected_video_index = -1  # Currently selected video in dropdown
         self.search_scroll = 0  # Scroll offset for search results
         self.is_searching = False  # Flag to show loading state
+        self.search_thread = None  # Background thread for search
         self.instructions_scroll = 0  # Scroll offset for instructions
         self.max_instructions_scroll = 0  # Maximum scroll value
         
@@ -689,6 +691,29 @@ class MainMenu:
         self._draw_text_overlays(scale, offset_x, offset_y)
         pygame.time.Clock().tick(60)
     
+    def update_loading_loop(self, message, is_complete_callback):
+        """Keep updating the loading screen animation until the callback returns True."""
+        self.loading_message = message
+        clock = pygame.time.Clock()
+        
+        while not is_complete_callback():
+            self.frame_count += 1
+            
+            # Handle events to keep window responsive
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    import sys
+                    sys.exit(0)
+            
+            # Render
+            self._text_overlays = []
+            self.screen.blit(self.background, (0, 0))
+            self._render_loading()
+            scale, offset_x, offset_y = self._present_canvas()
+            self._draw_text_overlays(scale, offset_x, offset_y)
+            clock.tick(60)
+    
     def _render_main_menu(self):
         """Render the main menu screen."""
         center_x = WINDOW_WIDTH / 2
@@ -981,17 +1006,29 @@ class MainMenu:
             
             # Perform search if flagged (do this outside event loop to avoid blocking)
             if self.is_searching and self.showing_url_input:
-                self.is_searching = False
-                try:
-                    print(f"Searching for: {self.url_input_text}")
-                    self.search_results = suggest_youtube_videos(self.url_input_text)
-                    if self.search_results:
-                        self.selected_video_index = 0  # Auto-select first result
-                    print(f"Found {len(self.search_results)} results")
-                except Exception as e:
-                    print(f"Search error: {e}")
-                    self.search_results = []
-                    self.selected_video_index = -1
+                # Only start a new search if one isn't already running
+                if self.search_thread is None or not self.search_thread.is_alive():
+                    search_query = self.url_input_text
+                    
+                    def search_task():
+                        try:
+                            print(f"Searching for: {search_query}")
+                            results = suggest_youtube_videos(search_query)
+                            # Update results safely (this will be read by main thread)
+                            self.search_results = results
+                            if results:
+                                self.selected_video_index = 0  # Auto-select first result
+                            print(f"Found {len(results)} results")
+                        except Exception as e:
+                            print(f"Search error: {e}")
+                            self.search_results = []
+                            self.selected_video_index = -1
+                        finally:
+                            self.is_searching = False
+                    
+                    # Start search in background thread
+                    self.search_thread = threading.Thread(target=search_task, daemon=True)
+                    self.search_thread.start()
             
             # Render
             self._text_overlays = []
@@ -1013,8 +1050,3 @@ class MainMenu:
         
         return choice
 
-
-if __name__ == "__main__":
-    menu = MainMenu()
-    result = menu.run()
-    print(f"Menu returned: {result}")

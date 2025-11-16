@@ -4,6 +4,7 @@ import pygame
 import math
 import numpy as np
 import librosa
+from audioanalyzer import AudioAnalyzer
 
 # -----------------------------------------
 # RhythmGen - Full Game File (Enhanced UI)
@@ -32,104 +33,15 @@ MAIN_WIDTH = WINDOW_WIDTH - SIDEBAR_WIDTH  # playfield area width
 PLAY_TOP = HEADER_HEIGHT 
 PLAY_BOTTOM = WINDOW_HEIGHT - FOOTER_HEIGHT
 
-KEYS = [pygame.K_a, pygame.K_s, pygame.K_d, pygame.K_f]
+# KEYS = [pygame.K_q, pygame.K_w, pygame.K_e, pygame.K_r]
 
+KEYS = [pygame.K_a, pygame.K_s, pygame.K_d, pygame.K_f]
 # Timing windows (seconds)
 HIT_WINDOW = 0.15
 PERFECT_WINDOW = 0.05
 MISS_THRESHOLD = 0.20
 
-# --- Audio Analyzer Constants ---
-CHUNK = 1024 # Samples per buffer
-RATE = 44100 # Sample rate
-# Frequency band ranges (Hz) for a 16-bar visualizer
-# This maps frequency to the visual bars
-FREQ_BANDS = [60, 100, 150, 220, 330, 480, 700, 1000, 1450, 2100, 3000, 4300, 6200, 9000, 13000, 20000]
-# Note: FREQ_BANDS length determines the number of bars to draw
-# Minimum non-zero amplitude fed into log calculations to avoid domain errors
-MIN_BAND_AMPLITUDE = 1e-6
-# -------------------------------------
 
-class AudioAnalyzer:
-    """Analyzes the downloaded song audio to drive the spectrum visualizer."""
-
-    def __init__(self, audio_path):
-        self.audio_path = audio_path
-        self.band_levels = [0.0] * len(FREQ_BANDS)
-        self.fft_cache = np.zeros(CHUNK // 2)
-        self.window = np.hanning(CHUNK)
-        self.audio_data, self.sample_rate = self._load_audio(audio_path)
-        self.total_samples = len(self.audio_data) if self.audio_data is not None else 0
-
-    def _load_audio(self, audio_path):
-        if not audio_path or not os.path.exists(audio_path):
-            print(" WARNING: Audio file for visualizer not found. Bars will stay idle.")
-            return None, RATE
-
-        try:
-            samples, sr = librosa.load(audio_path, sr=RATE, mono=True)
-            if samples.size == 0:
-                print(" WARNING: Loaded audio is empty. Visualizer disabled.")
-                return None, sr
-            return samples, sr
-        except Exception as exc:
-            print(f" WARNING: Failed to decode audio for visualizer: {exc}")
-            return None, RATE
-
-    def process_audio(self, playback_time):
-        if self.audio_data is None:
-            self.band_levels = [0.0] * len(FREQ_BANDS)
-            return self.band_levels
-
-        playback_time = max(0.0, playback_time)
-        start_idx = int(playback_time * self.sample_rate)
-
-        if start_idx >= self.total_samples:
-            window = np.zeros(CHUNK)
-        else:
-            end_idx = start_idx + CHUNK
-            window = self.audio_data[start_idx:end_idx]
-            if window.shape[0] < CHUNK:
-                window = np.pad(window, (0, CHUNK - window.shape[0]))
-
-        window = window * self.window
-        fft_data = np.abs(np.fft.fft(window))
-        self.fft_cache = fft_data[:CHUNK // 2]
-        self.band_levels = self._calculate_bands(self.fft_cache)
-        return self.band_levels
-
-    def _calculate_bands(self, fft_data):
-        """Map FFT data to specific frequency bands."""
-        levels = [0.0] * len(FREQ_BANDS)
-        
-        # Calculate frequency resolution
-        freq_resolution = RATE / CHUNK
-        
-        for i, band_end_freq in enumerate(FREQ_BANDS):
-            # Determine the FFT bin index corresponding to the band's end frequency
-            bin_index = int(band_end_freq / freq_resolution)
-            
-            # Determine the starting bin index
-            start_bin = 0 if i == 0 else int(FREQ_BANDS[i-1] / freq_resolution)
-            
-            if bin_index > start_bin and bin_index < len(fft_data):
-                # Calculate the average amplitude in this frequency range
-                band_sum = np.sum(fft_data[start_bin:bin_index])
-                band_count = bin_index - start_bin
-
-                # Normalize and scale the average amplitude. Use log scale for realism.
-                # Clamp to MIN_BAND_AMPLITUDE so silence doesn't produce log-domain errors.
-                avg_amplitude = max(band_sum / band_count, MIN_BAND_AMPLITUDE)
-
-                # Apply a gain and clamp the result (visual normalization)
-                log_level = math.log10(avg_amplitude) * 0.40
-                levels[i] = max(0.0, min(1.0, log_level)) 
-                
-        return levels
-        
-    def close(self):
-        # Nothing to clean up when analyzing from a file, but keep the method for API parity.
-        pass
 
 class RhythmGame:
     def __init__(self, beatmap, audio_path, latency_offset=0.0):
@@ -139,20 +51,30 @@ class RhythmGame:
         latency_offset: seconds to adjust timing relative to mixer clock
         """
         pygame.mixer.pre_init(frequency=44100, size=-16, channels=2, buffer=512)
-        pygame.init()
+        
+        # Ensure pygame is initialized
+        if not pygame.get_init():
+            pygame.init()
 
         pygame.display.set_caption("RhythmGen")
-        display_info = pygame.display.Info()
-        display_w = display_info.current_w or WINDOW_WIDTH
-        display_h = display_info.current_h or WINDOW_HEIGHT
-        self.display_size = (display_w, display_h)
+        
+        # Reuse existing display if available, otherwise create new one
+        existing_display = pygame.display.get_surface()
+        if existing_display:
+            self.display_surface = existing_display
+            self.display_size = existing_display.get_size()
+        else:
+            display_info = pygame.display.Info()
+            display_w = display_info.current_w or WINDOW_WIDTH
+            display_h = display_info.current_h or WINDOW_HEIGHT
+            self.display_size = (display_w, display_h)
 
-        try:
-            self.display_surface = pygame.display.set_mode(self.display_size, pygame.FULLSCREEN)
-        except pygame.error:
-            # Fallback to windowed mode if fullscreen fails
-            self.display_surface = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-            self.display_size = (WINDOW_WIDTH, WINDOW_HEIGHT)
+            try:
+                self.display_surface = pygame.display.set_mode(self.display_size, pygame.FULLSCREEN)
+            except pygame.error:
+                # Fallback to windowed mode if fullscreen fails
+                self.display_surface = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+                self.display_size = (WINDOW_WIDTH, WINDOW_HEIGHT)
 
         # Logical rendering surface keeps existing coordinate system
         self.screen = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT)).convert()
@@ -433,7 +355,17 @@ class RhythmGame:
 
         # Clean up audio stream upon exit
         self.audio_analyzer.close()
-        pygame.quit()
+        
+        # Stop and unload the song to prevent it from playing when returning to menu
+        if self.song:
+            self.song.stop()
+        pygame.mixer.music.stop()
+        pygame.mixer.music.unload()
+        
+        # Only quit pygame if we're not returning to menu
+        # The menu will handle pygame lifetime
+        if self.end_screen_action == "quit":
+            pygame.quit()
         
         # Return the action for main.py to handle
         return self.end_screen_action

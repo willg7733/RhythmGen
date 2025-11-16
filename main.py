@@ -4,6 +4,7 @@ from game import RhythmGame
 from menu import MainMenu
 import sys
 import pygame
+import threading
 
 def main():
     menu = None
@@ -31,14 +32,42 @@ def main():
                 print("No URL provided. Returning to menu...")
                 continue
             
-            # Download audio with loading screen
-            menu.update_loading("Downloading audio...")
+            # Shared variables for threading
+            audio = None
+            beatmap = None
+            error = None
+            download_complete = False
+            beatmap_complete = False
             
-            print("Downloading audio...")
-            try:
-                audio = download_audio(url, "audio.mp3")
-            except Exception as e:
-                print(f"Error downloading audio: {e}")
+            def download_task():
+                nonlocal audio, error, download_complete
+                try:
+                    print("Downloading audio...")
+                    audio = download_audio(url, "audio.mp3")
+                except Exception as e:
+                    error = f"Error downloading audio: {e}"
+                finally:
+                    download_complete = True
+            
+            def beatmap_task():
+                nonlocal beatmap, error, beatmap_complete
+                try:
+                    print("Generating beatmap...")
+                    beatmap = generate_beatmap(audio)
+                except Exception as e:
+                    error = f"Error generating beatmap: {e}"
+                finally:
+                    beatmap_complete = True
+            
+            # Start download in background thread
+            download_thread = threading.Thread(target=download_task, daemon=True)
+            download_thread.start()
+            
+            # Update loading screen while downloading
+            menu.update_loading_loop("Downloading audio...", lambda: download_complete)
+            
+            if error:
+                print(error)
                 print("Returning to menu...")
                 # Reset menu state
                 menu.showing_loading = False
@@ -48,14 +77,15 @@ def main():
                 menu.selected_video_index = -1
                 continue
             
-            # Generate beatmap with loading screen
-            menu.update_loading("Generating beatmap...")
+            # Start beatmap generation in background thread
+            beatmap_thread = threading.Thread(target=beatmap_task, daemon=True)
+            beatmap_thread.start()
             
-            print("Generating beatmap...")
-            try:
-                beatmap = generate_beatmap(audio)
-            except Exception as e:
-                print(f"Error generating beatmap: {e}")
+            # Update loading screen while generating beatmap
+            menu.update_loading_loop("Generating beatmap...", lambda: beatmap_complete)
+            
+            if error:
+                print(error)
                 print("Returning to menu...")
                 # Reset menu state
                 menu.showing_loading = False
