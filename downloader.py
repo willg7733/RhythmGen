@@ -3,10 +3,39 @@ import shutil
 import tempfile
 from pathlib import Path
 import yt_dlp
+import soundfile as sf
+import numpy as np
 
 def _check_ffmpeg_exists() -> bool:
     """Return True if ffmpeg is available on PATH (yt-dlp needs it for conversion)."""
     return shutil.which("ffmpeg") is not None
+
+def _add_silence_to_start(audio_path: str, silence_duration: float = 3.0) -> None:
+    """
+    Add silence to the start of an audio file.
+    - audio_path: path to the WAV file to modify
+    - silence_duration: duration of silence in seconds (default 3.0)
+    Modifies the file in place.
+    """
+    # Read the audio file
+    audio_data, sample_rate = sf.read(audio_path)
+    
+    # Calculate number of silent samples needed
+    silence_samples = int(silence_duration * sample_rate)
+    
+    # Create silence array with same number of channels as audio
+    if audio_data.ndim == 1:
+        # Mono audio
+        silence = np.zeros(silence_samples, dtype=audio_data.dtype)
+    else:
+        # Stereo or multi-channel audio
+        silence = np.zeros((silence_samples, audio_data.shape[1]), dtype=audio_data.dtype)
+    
+    # Concatenate silence before audio
+    audio_with_silence = np.concatenate([silence, audio_data])
+    
+    # Write back to the same file
+    sf.write(audio_path, audio_with_silence, sample_rate)
 
 def download_audio(url: str, output_path: str = "audio.wav") -> str: # <-- CHANGED
     """
@@ -67,6 +96,9 @@ def download_audio(url: str, output_path: str = "audio.wav") -> str: # <-- CHANG
         if out_path.exists():
             out_path.unlink()
         shutil.move(str(downloaded_wav), str(out_path)) # <-- CHANGED
+        
+        # Add 2 seconds of silence to the start of the audio
+        _add_silence_to_start(str(out_path), silence_duration=2.0)
 
         return str(out_path)
     except yt_dlp.utils.DownloadError as e:
