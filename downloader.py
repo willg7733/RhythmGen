@@ -1,5 +1,4 @@
 from __future__ import annotations
-import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -39,7 +38,7 @@ def download_audio(url: str, output_path: str = "audio.wav") -> str: # <-- CHANG
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",
-                    "preferredcodec": "wav",  # <-- CHANGED (mp3 -> wav)
+                    "preferredcodec": "wav",
                     # "preferredquality" removed (not needed for wav)
                 }
             ],
@@ -52,7 +51,6 @@ def download_audio(url: str, output_path: str = "audio.wav") -> str: # <-- CHANG
             ydl.download([url])
 
         # After successful download+conversion, find the wav in tmpdir
-        # <-- CHANGED (glob for .wav)
         wav_files = list(tmpdir.glob("download*.wav")) + list(tmpdir.glob("*.wav"))
         if not wav_files:
             candidates = list(tmpdir.iterdir())
@@ -63,7 +61,7 @@ def download_audio(url: str, output_path: str = "audio.wav") -> str: # <-- CHANG
             if not wav_files:
                 wav_files = [candidates[0]] # fallback
 
-        downloaded_wav = wav_files[0] # <-- CHANGED (variable name)
+        downloaded_wav = wav_files[0]
         
         # Move to desired final path (overwrite if exists)
         if out_path.exists():
@@ -85,7 +83,6 @@ def download_audio(url: str, output_path: str = "audio.wav") -> str: # <-- CHANG
 if __name__ == "__main__":
     url = input("YouTube URL: ").strip()
     try:
-        # <-- CHANGED (default output)
         result = download_audio(url, output_path="audio.wav") 
         print(f"Successfully downloaded and saved to:\n{result}")
     except Exception as exc:
