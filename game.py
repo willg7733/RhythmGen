@@ -4,15 +4,16 @@ import pygame
 import json
 import time
 
-LANE_WIDTH = 100
-NOTE_WIDTH = 80
-NOTE_HEIGHT = 20
+LANE_WIDTH = 200
+NOTE_WIDTH = 160
+NOTE_HEIGHT = 40
 NOTE_SPEED = 300  # pixels per second
-HIT_LINE_Y = 500
-WINDOW_WIDTH = 400
-WINDOW_HEIGHT = 600
+HIT_LINE_Y = 1000
+WINDOW_WIDTH = 800
+WINDOW_HEIGHT = 1200
 
 KEYS = [pygame.K_a, pygame.K_s, pygame.K_d, pygame.K_f]
+LANE_LABELS = ["A", "S", "D", "F"]
 
 class RhythmGame:
     def __init__(self, beatmap, audio_path, latency_offset=0.0):
@@ -48,8 +49,27 @@ class RhythmGame:
         self.start_time = 0
         # --- END CHANGE ---
 
-        # pre-create font once
-        self.font = pygame.font.Font(None, 36)
+        # pre-create monospace fonts for ASCII rendering
+        mono_candidates = ["couriernew", "courier", "consolas", "lucidaconsole", "menlo", "monospace"]
+        font_path = None
+        for candidate in mono_candidates:
+            match = pygame.font.match_font(candidate)
+            if match:
+                font_path = match
+                break
+
+        base_ascii_size = 28 * 2
+        base_ui_size = 22 * 2
+        if font_path:
+            self.ascii_font = pygame.font.Font(font_path, base_ascii_size)
+            self.ui_font = pygame.font.Font(font_path, base_ui_size)
+        else:
+            self.ascii_font = pygame.font.Font(None, base_ascii_size)
+            self.ui_font = pygame.font.Font(None, base_ui_size)
+
+        self.char_width = self.ascii_font.size("M")[0]
+        self.char_height = self.ascii_font.get_height()
+        self._ascii_cache = {}
 
     def run(self):
         clock = pygame.time.Clock()
@@ -125,50 +145,68 @@ class RhythmGame:
 
 
     def render(self, current_time):
-        self.screen.fill((0, 0, 0))
+        self.screen.fill((5, 5, 5))
 
-        # Draw lanes
-        for i in range(4):
-            x = i * LANE_WIDTH + 10
-            pygame.draw.rect(
-                self.screen,
-                (40, 40, 40),
-                (i * LANE_WIDTH, 0, LANE_WIDTH, WINDOW_HEIGHT),
-                2
-            )
+        self._draw_lane_boundaries()
+        self._draw_hit_line()
+        self._draw_lane_labels()
+        self._draw_notes(current_time)
+        self._draw_hud()
 
-        # Draw hit line
-        pygame.draw.line(self.screen, (255, 255, 255), (0, HIT_LINE_Y), (WINDOW_WIDTH, HIT_LINE_Y), 2)
+        pygame.display.flip()
 
-        # Draw notes
+    def _draw_lane_boundaries(self):
+        color = (80, 200, 120)
+        for lane in range(5):
+            x = lane * LANE_WIDTH - self.char_width // 2
+            x = max(0, min(WINDOW_WIDTH - self.char_width, x))
+            for y in range(0, WINDOW_HEIGHT, self.char_height):
+                self._draw_ascii("|", x, y, color)
+
+    def _draw_hit_line(self):
+        repeats = WINDOW_WIDTH // self.char_width + 2
+        line = "=" * repeats
+        y = HIT_LINE_Y - self.char_height // 2
+        self._draw_ascii(line, 0, y, (255, 255, 255))
+
+    def _draw_lane_labels(self):
+        baseline = WINDOW_HEIGHT - self.char_height * 1.5
+        for idx, label in enumerate(LANE_LABELS):
+            x_center = idx * LANE_WIDTH + LANE_WIDTH // 2 - self.char_width // 2
+            self._draw_ascii(f"[{label}]", x_center - self.char_width // 2, baseline, (200, 200, 200))
+
+    def _draw_notes(self, current_time):
         for note in list(self.notes):
             time_until_hit = note["time"] - current_time
             y = HIT_LINE_Y - time_until_hit * NOTE_SPEED
 
-            # cull offscreen notes
-            if y > WINDOW_HEIGHT + NOTE_HEIGHT: # Adjusted threshold
+            if y > WINDOW_HEIGHT + self.char_height * 2:
                 continue
-            
-            # Don't render notes that have already been missed and removed
-            if y < -50:
+            if y < -self.char_height * 2:
                 continue
 
-            pygame.draw.rect(
-                self.screen,
-                (0, 150, 255),
-                (
-                    note["lane"] * LANE_WIDTH + (LANE_WIDTH - NOTE_WIDTH) // 2,
-                    y,
-                    NOTE_WIDTH,
-                    NOTE_HEIGHT
-                )
-            )
+            if abs(time_until_hit) <= 0.08:
+                symbol = "<=>"
+                color = (255, 230, 120)
+            else:
+                symbol = "[ ]"
+                color = (0, 200, 255)
 
-        # Score text
-        score_text = self.font.render(f"Score: {self.score}  Combo: {self.combo}", True, (255, 255, 255))
-        self.screen.blit(score_text, (10, 10))
+            text_width = len(symbol) * self.char_width
+            x_center = note["lane"] * LANE_WIDTH + LANE_WIDTH // 2 - text_width // 2
+            y_offset = y - self.char_height // 2
+            self._draw_ascii(symbol, x_center, y_offset, color)
 
-        pygame.display.flip()
+    def _draw_hud(self):
+        hud = f"Score: {self.score:06d}  Combo: {self.combo:03d}"
+        text_surface = self.ui_font.render(hud, True, (255, 255, 255))
+        self.screen.blit(text_surface, (10, 10))
+
+    def _draw_ascii(self, text, x, y, color):
+        key = (text, color)
+        if key not in self._ascii_cache:
+            self._ascii_cache[key] = self.ascii_font.render(text, True, color)
+        self.screen.blit(self._ascii_cache[key], (int(x), int(y)))
 
 if __name__ == "__main__":
     import sys
