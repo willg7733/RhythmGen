@@ -15,6 +15,9 @@ LANE_WIDTH = 120
 NOTE_WIDTH = 90
 NOTE_HEIGHT = 22
 NOTE_SPEED = 320         # pixels per second
+BASE_NOTE_SCORE = 100
+MAX_MULTIPLIER = 8
+PERFECTS_PER_MULTIPLIER = 10
 NOTE_ENTRY_MIN_Y = -NOTE_HEIGHT  # allow notes to begin just off-screen at the top
 HEADER_HEIGHT = 70
 FOOTER_HEIGHT = 70
@@ -60,17 +63,17 @@ class AudioAnalyzer:
 
     def _load_audio(self, audio_path):
         if not audio_path or not os.path.exists(audio_path):
-            print("❌ WARNING: Audio file for visualizer not found. Bars will stay idle.")
+            print(" WARNING: Audio file for visualizer not found. Bars will stay idle.")
             return None, RATE
 
         try:
             samples, sr = librosa.load(audio_path, sr=RATE, mono=True)
             if samples.size == 0:
-                print("❌ WARNING: Loaded audio is empty. Visualizer disabled.")
+                print(" WARNING: Loaded audio is empty. Visualizer disabled.")
                 return None, sr
             return samples, sr
         except Exception as exc:
-            print(f"❌ WARNING: Failed to decode audio for visualizer: {exc}")
+            print(f" WARNING: Failed to decode audio for visualizer: {exc}")
             return None, RATE
 
     def process_audio(self, playback_time):
@@ -155,6 +158,7 @@ class RhythmGame:
         self.screen = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT)).convert()
 
         self.notes = beatmap[:]  # copy
+        self.total_note_count = len(beatmap)
         
         # Initialize the external audio analyzer using the downloaded song
         self.audio_analyzer = AudioAnalyzer(audio_path)
@@ -169,6 +173,10 @@ class RhythmGame:
         self.latency_offset = latency_offset
         self.score = 0
         self.combo = 0
+        self.multiplier = 1
+        self.perfect_hits_in_combo = 0
+        self.missed_notes = 0
+        self.accuracy = 100.0
         self.start_time_ms = 0
 
         # Fonts (store base sizes so overlays can scale cleanly)
@@ -214,6 +222,35 @@ class RhythmGame:
             NOTE_WIDTH,
             NOTE_HEIGHT
         )
+
+    def _reset_multiplier(self):
+        self.multiplier = 1
+        self.perfect_hits_in_combo = 0
+
+    def _increase_multiplier(self):
+        if self.multiplier < MAX_MULTIPLIER:
+            self.multiplier += 1
+
+    def _register_perfect_hit(self):
+        if self.multiplier >= MAX_MULTIPLIER:
+            return
+        self.perfect_hits_in_combo += 1
+        if self.perfect_hits_in_combo >= PERFECTS_PER_MULTIPLIER:
+            self.perfect_hits_in_combo = 0
+            self._increase_multiplier()
+
+    def _recalculate_accuracy(self):
+        """Calculate accuracy as percentage of notes hit successfully."""
+        if self.total_note_count <= 0:
+            self.accuracy = 0.0
+            return
+        # Accuracy = (total notes - missed notes) / total notes * 100
+        self.accuracy = ((self.total_note_count - self.missed_notes) / self.total_note_count) * 100.0
+
+    def _record_miss(self):
+        """Increment missed notes counter and recalculate accuracy."""
+        self.missed_notes += 1
+        self._recalculate_accuracy()
 
     # ---------------------------------------
     # Feedback helpers
@@ -271,7 +308,7 @@ class RhythmGame:
         pygame.quit()
 
     def check_hit(self, lane, current_time):
-        # ... (check_hit remains the same)
+        # Check if there's a note in this lane within the hit window
         for note in self.notes[:]:
             if note["lane"] != lane:
                 continue
@@ -279,15 +316,21 @@ class RhythmGame:
             if abs(time_diff) <= HIT_WINDOW:
                 self.notes.remove(note)
                 self.combo += 1
-                self.score += 100
+                is_perfect = abs(time_diff) <= PERFECT_WINDOW
+                applied_multiplier = self.multiplier
+                self.score += BASE_NOTE_SCORE * applied_multiplier
                 x = self._lane_center_x(lane)
                 fb_y = HIT_LINE_Y - 40
-                if abs(time_diff) <= PERFECT_WINDOW:
-                    self.add_feedback("Perfect", (255, 255, 140), x, fb_y, big=True)
+                if is_perfect:
+                    feedback_text = f"Perfect x{applied_multiplier}"
+                    self.add_feedback(feedback_text, (255, 255, 140), x, fb_y, big=True)
+                    self._register_perfect_hit()
                 else:
                     self.add_feedback("Good", (120, 255, 180), x, fb_y, big=False)
                 return
+        # Key pressed but no note to hit - just reset combo, don't count as miss
         self.combo = 0
+        self._reset_multiplier()
         x = self._lane_center_x(lane)
         self.add_feedback("Miss", (255, 100, 100), x, HIT_LINE_Y - 40, big=False)
 
@@ -297,6 +340,8 @@ class RhythmGame:
             if current_time > note["time"] + MISS_THRESHOLD:
                 self.notes.remove(note)
                 self.combo = 0
+                self._reset_multiplier()
+                self._record_miss()
                 x = self._lane_center_x(note["lane"])
                 self.add_feedback("Miss", (255, 100, 100), x, HIT_LINE_Y - 40, big=False)
                 
@@ -480,7 +525,7 @@ class RhythmGame:
         pygame.draw.rect(self.screen, (22, 22, 28), sidebar_rect)
 
         # Sidebar: Score & Combo section
-        sidebar_header = pygame.Rect(MAIN_WIDTH, 0, SIDEBAR_WIDTH, 140)
+        sidebar_header = pygame.Rect(MAIN_WIDTH, 0, SIDEBAR_WIDTH, 230)
         pygame.draw.rect(self.screen, (35, 35, 45), sidebar_header)
         pygame.draw.rect(self.screen, (85, 85, 110), sidebar_header, 2)
 
@@ -502,7 +547,46 @@ class RhythmGame:
             70,
             font_size=self.ui_font_size
         )
+        self._queue_text(
+            self._text_overlays,
+            self.ui_font,
+            f"Multiplier: x{self.multiplier}",
+            (180, 255, 220),
+            MAIN_WIDTH + 16,
+            110,
+            font_size=self.ui_font_size
+        )
+        if self.multiplier >= MAX_MULTIPLIER:
+            multiplier_hint = "Max multiplier reached"
+        else:
+            remaining = max(0, PERFECTS_PER_MULTIPLIER - self.perfect_hits_in_combo)
+            multiplier_hint = f"{remaining} perfects to x{self.multiplier + 1}"
 
+        self._queue_text(
+            self._text_overlays,
+            self.label_font,
+            multiplier_hint,
+            (160, 200, 255),
+            MAIN_WIDTH + 16,
+            140,
+            font_size=self.label_font_size
+        )
+
+        accuracy_y = 170
+        if self.missed_notes == 0:
+            accuracy_label = "Accuracy: 100%"
+        else:
+            accuracy_label = f"Accuracy: {self.accuracy:.1f}%"
+
+        self._queue_text(
+            self._text_overlays,
+            self.ui_font,
+            accuracy_label,
+            (200, 230, 255),
+            MAIN_WIDTH + 16,
+            accuracy_y,
+            font_size=self.ui_font_size
+        )
         # Sidebar: Visualizer (Live Spectrum Bars)
         self._render_visualizer()
 
