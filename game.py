@@ -183,6 +183,14 @@ class RhythmGame:
         self.countdown_active = True
         self.countdown_start_time = 0
         self.countdown_duration = 3.0  # 3 seconds countdown (3, 2, 1, GO)
+        
+        # Pause state
+        self.paused = False
+        self.pause_start_time = 0
+        self.total_pause_time = 0.0  # Track accumulated pause time
+        
+        # Animation state
+        self.frame_count = 0  # For pulse animations
 
         # Fonts (store base sizes so overlays can scale cleanly)
         self.ui_font_size = 30
@@ -198,6 +206,10 @@ class RhythmGame:
         self.feedback_font_large = pygame.font.Font(None, self.feedback_font_large_size)
         self.countdown_font_size = 180
         self.countdown_font = pygame.font.Font(None, self.countdown_font_size)
+        self.pause_title_font_size = 72
+        self.pause_title_font = pygame.font.Font(None, self.pause_title_font_size)
+        self.pause_hint_font_size = 36
+        self.pause_hint_font = pygame.font.Font(None, self.pause_hint_font_size)
 
         # Visual feedback stores
         self.feedbacks = []  # floating labels above notes
@@ -301,12 +313,15 @@ class RhythmGame:
                 else:
                     # During countdown, time doesn't advance
                     current_time = -1.0
+            elif self.paused:
+                # During pause, time doesn't advance
+                current_time = ((self.pause_start_time - self.start_time_ms) / 1000.0) + self.latency_offset - self.total_pause_time
             else:
-                # Normal gameplay - Update Game Time
-                current_time = ((current_ticks - self.start_time_ms) / 1000.0) + self.latency_offset
+                # Normal gameplay - Update Game Time (subtract accumulated pause time)
+                current_time = ((current_ticks - self.start_time_ms) / 1000.0) + self.latency_offset - self.total_pause_time
 
             # Process Real Audio for Visualizer using the song playback time
-            if not self.countdown_active:
+            if not self.countdown_active and not self.paused:
                 self.current_band_levels = self.audio_analyzer.process_audio(current_time)
             
             # Handle Events
@@ -315,12 +330,34 @@ class RhythmGame:
                     running = False
 
                 if event.type == pygame.KEYDOWN:
-                    if event.key in KEYS and not self.countdown_active:
+                    # ESC key toggles pause (only after countdown)
+                    if event.key == pygame.K_ESCAPE and not self.countdown_active:
+                        if self.paused:
+                            # Unpause
+                            pause_duration = (current_ticks - self.pause_start_time) / 1000.0
+                            self.total_pause_time += pause_duration
+                            self.paused = False
+                            # Resume playback from where we left off
+                            if self.song:
+                                self.song.stop()
+                                self.song.play()
+                                # Seek to the current position (approximate)
+                                # Note: pygame.mixer.Sound doesn't support seeking, 
+                                # so we restart from the calculated position
+                        else:
+                            # Pause
+                            self.paused = True
+                            self.pause_start_time = current_ticks
+                            if self.song:
+                                self.song.stop()
+                    
+                    # Game keys only work when not paused and not in countdown
+                    elif event.key in KEYS and not self.countdown_active and not self.paused:
                         lane = KEYS.index(event.key)
                         self.check_hit(lane, current_time)
 
             # Update Game State (only during active gameplay)
-            if not self.countdown_active:
+            if not self.countdown_active and not self.paused:
                 self.check_misses(current_time)
             
             # Render
@@ -480,8 +517,49 @@ class RhythmGame:
             font_size=self.countdown_font_size
         )
 
+    def _render_pause(self):
+        """Render the pause overlay with semi-transparent background."""
+        # Draw semi-transparent overlay across entire screen
+        overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT))
+        overlay.set_alpha(200)  # More opaque than countdown
+        overlay.fill((15, 15, 25))  # Very dark gray
+        self.screen.blit(overlay, (0, 0))
+        
+        # Draw pause text in center
+        center_x = WINDOW_WIDTH / 2
+        center_y = WINDOW_HEIGHT / 2
+        
+        # Title: "Rhythm Gen Paused"
+        self._queue_text(
+            self._text_overlays,
+            self.pause_title_font,
+            "Paused",
+            (255, 255, 100),  # Yellow
+            center_x,
+            center_y - 60,
+            center=True,
+            font_size=self.pause_title_font_size
+        )
+        
+        # Hint: "Press ESC to unpause"
+        self._queue_text(
+            self._text_overlays,
+            self.pause_hint_font,
+            "Press ESC to unpause",
+            (200, 200, 200),  # Light gray
+            center_x,
+            center_y + 20,
+            center=True,
+            font_size=self.pause_hint_font_size
+        )
+
     def render(self, current_time):
         self._text_overlays = []
+        
+        # Increment frame counter for animations (only when not paused)
+        if not self.paused:
+            self.frame_count += 1
+        
         # Main background (playfield only)
         self.screen.blit(self.background, (0, 0))
 
@@ -612,14 +690,44 @@ class RhythmGame:
             70,
             font_size=self.ui_font_size
         )
+        
+        # Multiplier with pulsing effect when > 1
+        if self.multiplier > 1:
+            # Calculate pulse effect
+            # Pulse speed increases with multiplier (faster pulse at higher multipliers)
+            pulse_speed = 0.1 + (self.multiplier - 1) * 0.02  # Speed ranges from 0.1 to ~0.24
+            pulse_wave = math.sin(self.frame_count * pulse_speed)
+            
+            # Base size increase based on multiplier level
+            # Higher multiplier = bigger base size (MUCH BIGGER NOW)
+            size_boost = 1.0 + (self.multiplier - 1) * 0.35  # Ranges from 1.0 to ~3.45
+            
+            # Pulse amplitude increases with multiplier (MORE DRAMATIC)
+            pulse_amplitude = 0.1 + (self.multiplier - 1) * 0.05  # Ranges from 0.1 to ~0.45
+            
+            # Calculate final size
+            size_multiplier = size_boost + (pulse_wave * pulse_amplitude)
+            multiplier_font_size = int(self.ui_font_size * size_multiplier)
+            
+            # Color intensity also pulses (brighter when larger)
+            color_intensity = 180 + int(pulse_wave * 30)
+            multiplier_color = (color_intensity, 255, 220)
+        else:
+            # No effect at multiplier 1
+            multiplier_font_size = self.ui_font_size
+            multiplier_color = (180, 255, 220)
+        
+        # Create font with adjusted size
+        multiplier_font = pygame.font.Font(None, multiplier_font_size)
+        
         self._queue_text(
             self._text_overlays,
-            self.ui_font,
+            multiplier_font,
             f"x{self.multiplier}",
-            (180, 255, 220),
+            multiplier_color,
             MAIN_WIDTH + 16,
             110,
-            font_size=self.ui_font_size
+            font_size=multiplier_font_size
         )
 
         accuracy_y = 170
@@ -643,6 +751,10 @@ class RhythmGame:
         # Render countdown overlay if active
         if self.countdown_active:
             self._render_countdown()
+        
+        # Render pause overlay if paused
+        if self.paused:
+            self._render_pause()
 
         scale, offset_x, offset_y = self._present_canvas()
         self._draw_text_overlays(scale, offset_x, offset_y)
