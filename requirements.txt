@@ -4,3 +4,4 @@ numpy
 pygame
 soundfile
 pytubefix
+opencv-python

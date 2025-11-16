@@ -1,4 +1,4 @@
-from downloader import download_audio
+from downloader import download_media
 from beatmap import generate_beatmap
 from game import RhythmGame
 from menu import MainMenu
@@ -33,19 +33,19 @@ def main():
                 continue
             
             # Shared variables for threading
-            audio = None
+            media_info = None
             beatmap = None
             error = None
             download_complete = False
             beatmap_complete = False
             
             def download_task():
-                nonlocal audio, error, download_complete
+                nonlocal media_info, error, download_complete
                 try:
-                    print("Downloading audio...")
-                    audio = download_audio(url, "audio.mp3")
+                    print("Downloading media (audio + video)...")
+                    media_info = download_media(url, audio_output_path="audio.mp3", video_output_path="video.mp4")
                 except Exception as e:
-                    error = f"Error downloading audio: {e}"
+                    error = f"Error downloading media: {e}"
                 finally:
                     download_complete = True
             
@@ -53,7 +53,9 @@ def main():
                 nonlocal beatmap, error, beatmap_complete
                 try:
                     print("Generating beatmap...")
-                    beatmap = generate_beatmap(audio)
+                    if not media_info:
+                        raise RuntimeError("Audio was not downloaded successfully")
+                    beatmap = generate_beatmap(media_info["audio_path"])
                 except Exception as e:
                     error = f"Error generating beatmap: {e}"
                 finally:
@@ -64,7 +66,7 @@ def main():
             download_thread.start()
             
             # Update loading screen while downloading
-            menu.update_loading_loop("Downloading audio...", lambda: download_complete)
+            menu.update_loading_loop("Downloading audio/video...", lambda: download_complete)
             
             if error:
                 print(error)
@@ -98,7 +100,10 @@ def main():
             # Game loop for retries
             while True:
                 print("Starting game...")
-                game = RhythmGame(beatmap, audio)
+                audio_path = media_info["audio_path"] if media_info else None
+                video_path = media_info["video_path"] if media_info else None
+                intro_delay = media_info["intro_silence"] if media_info else 0.0
+                game = RhythmGame(beatmap, audio_path, video_path=video_path, video_delay=intro_delay)
                 result = game.run()
                 
                 if result == "retry":

@@ -2,9 +2,21 @@ from __future__ import annotations
 import shutil
 import tempfile
 from pathlib import Path
+from typing import Any, Dict, TypedDict
+
 import yt_dlp
+from yt_dlp.utils import DownloadError
 import soundfile as sf
 import numpy as np
+
+INTRO_SILENCE_DURATION = 2.0
+
+
+class DownloadedMedia(TypedDict):
+    audio_path: str
+    video_path: str
+    intro_silence: float
+
 
 def _check_ffmpeg_exists() -> bool:
     """Return True if ffmpeg is available on PATH (yt-dlp needs it for conversion)."""
@@ -37,14 +49,80 @@ def _add_silence_to_start(audio_path: str, silence_duration: float = 3.0) -> Non
     # Write back to the same file
     sf.write(audio_path, audio_with_silence, sample_rate)
 
-def download_audio(url: str, output_path: str = "audio.wav") -> str: # <-- CHANGED
-    """
-    Download audio from YouTube and convert to WAV using yt-dlp + ffmpeg.
-    - url: YouTube watch/share URL
-    - output_path: final path (default "audio.wav")
-    Returns: final path as string.
-    Raises: RuntimeError on failure with helpful message.
-    """
+
+def _download_audio_file(url: str, tmpdir: Path) -> Path:
+    out_template = str(tmpdir / "audio.%(ext)s")
+
+    ydl_opts: Dict[str, Any] = {
+        "format": "bestaudio/best",
+        "outtmpl": out_template,
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "wav",
+            }
+        ],
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore[arg-type]
+        ydl.download([url])
+
+    wav_files = list(tmpdir.glob("audio*.wav")) + list(tmpdir.glob("*.wav"))
+    if not wav_files:
+        candidates = list(tmpdir.iterdir())
+        if not candidates:
+            raise RuntimeError("yt-dlp finished but no audio output file was found in temporary directory.")
+        wav_files = [p for p in candidates if p.suffix.lower() == ".wav"] or [candidates[0]]
+
+    return wav_files[0]
+
+
+def _download_video_file(url: str, tmpdir: Path) -> Path:
+    out_template = str(tmpdir / "video.%(ext)s")
+
+    avc_preferred = (
+        "bestvideo[ext=mp4][height<=720][vcodec^=avc1]+bestaudio[ext=m4a]"
+    )
+    h264_fallback = (
+        "bestvideo[ext=mp4][height<=720][vcodec~='.(264|h264)']+bestaudio[ext=m4a]"
+    )
+    generic_mp4 = "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]"
+    direct_best = "best[ext=mp4][height<=720]/best[ext=mp4]/best"
+
+    ydl_opts: Dict[str, Any] = {
+        "format": f"{avc_preferred}/{h264_fallback}/{generic_mp4}/{direct_best}",
+        "merge_output_format": "mp4",
+        "outtmpl": out_template,
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore[arg-type]
+        ydl.download([url])
+
+    video_files = list(tmpdir.glob("video*.mp4")) + list(tmpdir.glob("*.mp4"))
+    if not video_files:
+        candidates = list(tmpdir.iterdir())
+        if not candidates:
+            raise RuntimeError("yt-dlp finished but no video output file was found in temporary directory.")
+        video_files = [p for p in candidates if p.suffix.lower() in (".mp4", ".mkv", ".webm")]
+        if not video_files:
+            video_files = [candidates[0]]
+
+    return video_files[0]
+
+
+def download_media(
+    url: str,
+    audio_output_path: str = "audio.wav",
+    video_output_path: str = "video.mp4",
+) -> DownloadedMedia:
+    """Download the song audio (with intro silence) plus the accompanying video."""
+
     if not url or not isinstance(url, str):
         raise ValueError("A valid YouTube URL (string) must be provided.")
 
@@ -54,57 +132,36 @@ def download_audio(url: str, output_path: str = "audio.wav") -> str: # <-- CHANG
             "or `brew install ffmpeg`) before running this script."
         )
 
-    out_path = Path(output_path).resolve()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    audio_out_path = Path(audio_output_path).resolve()
+    video_out_path = Path(video_output_path).resolve()
+    audio_out_path.parent.mkdir(parents=True, exist_ok=True)
+    video_out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    tmpdir = Path(tempfile.mkdtemp(prefix="yt_audio_"))
+    tmpdir = Path(tempfile.mkdtemp(prefix="yt_media_"))
     try:
-        out_template = str(tmpdir / "download.%(ext)s")
+        downloaded_wav = _download_audio_file(url, tmpdir)
 
-        ydl_opts = {
-            "format": "bestaudio/best",
-            "outtmpl": out_template,
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "wav",
-                    # "preferredquality" removed (not needed for wav)
-                }
-            ],
-            "noplaylist": True,
-            "quiet": True,
-            "no_warnings": True,
+        if audio_out_path.exists():
+            audio_out_path.unlink()
+        shutil.move(str(downloaded_wav), str(audio_out_path))
+
+        _add_silence_to_start(str(audio_out_path), silence_duration=INTRO_SILENCE_DURATION)
+
+        downloaded_video = _download_video_file(url, tmpdir)
+
+        if video_out_path.exists():
+            video_out_path.unlink()
+        shutil.move(str(downloaded_video), str(video_out_path))
+
+        return {
+            "audio_path": str(audio_out_path),
+            "video_path": str(video_out_path),
+            "intro_silence": INTRO_SILENCE_DURATION,
         }
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-
-        # After successful download+conversion, find the wav in tmpdir
-        wav_files = list(tmpdir.glob("download*.wav")) + list(tmpdir.glob("*.wav"))
-        if not wav_files:
-            candidates = list(tmpdir.iterdir())
-            if not candidates:
-                raise RuntimeError("yt-dlp finished but no output file was found in temporary directory.")
-            # prefer a wav-like file
-            wav_files = [p for p in candidates if p.suffix.lower() == ".wav"]
-            if not wav_files:
-                wav_files = [candidates[0]] # fallback
-
-        downloaded_wav = wav_files[0]
-        
-        # Move to desired final path (overwrite if exists)
-        if out_path.exists():
-            out_path.unlink()
-        shutil.move(str(downloaded_wav), str(out_path)) # <-- CHANGED
-        
-        # Add 2 seconds of silence to the start of the audio
-        _add_silence_to_start(str(out_path), silence_duration=2.0)
-
-        return str(out_path)
-    except yt_dlp.utils.DownloadError as e:
-        raise RuntimeError(f"yt-dlp failed to download the video: {e}") from e
+    except DownloadError as e:
+        raise RuntimeError(f"yt-dlp failed to download the media: {e}") from e
     except Exception as e:
-        raise RuntimeError(f"Failed to download/convert audio: {e}") from e
+        raise RuntimeError(f"Failed to download/convert media: {e}") from e
     finally:
         try:
             if tmpdir.exists():
@@ -112,11 +169,19 @@ def download_audio(url: str, output_path: str = "audio.wav") -> str: # <-- CHANG
         except Exception:
             pass
 
+
+def download_audio(url: str, output_path: str = "audio.wav") -> str:
+    """Backward-compatible helper that returns only the audio path."""
+    result = download_media(url, audio_output_path=output_path)
+    return result["audio_path"]
+
 if __name__ == "__main__":
     url = input("YouTube URL: ").strip()
     try:
-        result = download_audio(url, output_path="audio.wav") 
-        print(f"Successfully downloaded and saved to:\n{result}")
+        result = download_media(url, audio_output_path="audio.wav", video_output_path="video.mp4")
+        print("Successfully downloaded media:")
+        print(f"  Audio: {result['audio_path']}")
+        print(f"  Video: {result['video_path']}")
     except Exception as exc:
         print("Error:", exc)
         print("\nHints: make sure the URL is a valid YouTube watch/share link and ffmpeg is installed.")

@@ -4,6 +4,12 @@ import pygame
 import math
 import numpy as np
 import librosa
+
+try:
+    import cv2  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - optional dependency
+    cv2 = None
+
 from audioanalyzer import AudioAnalyzer
 
 # -----------------------------------------
@@ -28,6 +34,12 @@ HIT_LINE_Y = 560         # y position where notes should be hit
 SIDEBAR_WIDTH = 260
 WINDOW_WIDTH = LANE_COUNT * LANE_WIDTH + SIDEBAR_WIDTH
 WINDOW_HEIGHT = 720
+
+VIDEO_ASPECT_RATIO = 16 / 9
+VIDEO_PANEL_MARGIN = 16
+VIDEO_PANEL_BG = (5, 5, 10)
+VIDEO_PANEL_BORDER = (40, 40, 55)
+VIDEO_PANEL_TEXT = (180, 200, 220)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSETS_DIR = os.path.join(BASE_DIR, "assets")
@@ -129,8 +141,105 @@ EQ_BAR = (0, 187, 249)
 
 
 
+class VideoPanel:
+    def __init__(self, video_path, size, start_delay=0.0):
+        self.video_path = video_path
+        self.size = size
+        self.start_delay = max(0.0, start_delay)
+        has_cv2 = cv2 is not None
+        path_exists = bool(video_path and os.path.isfile(video_path))
+        self.enabled = has_cv2 and path_exists
+        self.error_message = None
+        self.cap = None
+        self.frame_surface = pygame.Surface(size).convert()
+        self.frame_surface.fill(VIDEO_PANEL_BG)
+        self.last_frame_index = -1
+        self.fps = 30.0
+        self.total_frames = 0
+        self.finished = False
+        self.has_frame = False
+
+        if self.enabled and cv2 is not None:
+            self.cap = cv2.VideoCapture(video_path)  # type: ignore[call-arg]
+            if not self.cap or not self.cap.isOpened():
+                self.error_message = "Unable to open video"
+                self.enabled = False
+            else:
+                fps = self.cap.get(cv2.CAP_PROP_FPS) if cv2 else 30.0
+                if fps and fps > 0:
+                    self.fps = fps
+                total_frames = self.cap.get(cv2.CAP_PROP_FRAME_COUNT) if cv2 else 0
+                if total_frames:
+                    self.total_frames = int(total_frames)
+        else:
+            if not video_path:
+                self.error_message = "No video available"
+            elif not os.path.isfile(video_path):
+                self.error_message = "Video file missing"
+            elif not has_cv2:
+                self.error_message = "Install opencv-python to enable video playback"
+
+    def update(self, song_time, allow_advance=True):
+        if cv2 is None or not self.enabled or not self.cap or not allow_advance or self.finished:
+            return
+
+        playback_time = song_time - self.start_delay
+        if playback_time < 0:
+            return
+
+        target_frame = int(playback_time * self.fps)
+        if self.total_frames and target_frame >= self.total_frames:
+            self.finished = True
+            return
+
+        if target_frame == self.last_frame_index:
+            return
+
+        frame = None
+        needs_seek = (
+            self.last_frame_index == -1
+            or target_frame < self.last_frame_index
+            or target_frame - self.last_frame_index > self.fps
+        )
+
+        if needs_seek:
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, target_frame))
+            ret, frame = self.cap.read()
+            if not ret:
+                self.finished = True
+                return
+            self.last_frame_index = target_frame
+        else:
+            while self.last_frame_index < target_frame:
+                ret, frame = self.cap.read()
+                if not ret:
+                    self.finished = True
+                    return
+                self.last_frame_index += 1
+
+        if frame is None:
+            return
+        
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        surface = pygame.image.frombuffer(rgb.tobytes(), (rgb.shape[1], rgb.shape[0]), "RGB")
+        if surface.get_size() != self.size:
+            surface = pygame.transform.smoothscale(surface, self.size)
+        self.frame_surface = surface.convert()
+        self.has_frame = True
+
+    def draw(self, target_surface, rect):
+        surface = self.frame_surface
+        if surface.get_size() != rect.size:
+            surface = pygame.transform.smoothscale(surface, rect.size)
+        target_surface.blit(surface, rect.topleft)
+
+    def close(self):
+        if self.cap:
+            self.cap.release()
+
+
 class RhythmGame:
-    def __init__(self, beatmap, audio_path, latency_offset=0.0):
+    def __init__(self, beatmap, audio_path, latency_offset=0.0, *, video_path=None, video_delay=0.0):
         """
         beatmap: list of dicts: {"time": float_seconds, "lane": int_0_to_3}
         audio_path: path to audio file (e.g., song.ogg)
@@ -242,6 +351,29 @@ class RhythmGame:
         
         # Precompute subtle two-color gradient for main background
         self.background = self._create_vertical_gradient(COLOR_BACKGROUND_GRADIENT_TOP, COLOR_BACKGROUND_GRADIENT_BOTTOM)
+
+        # Video panel setup
+        panel_width = SIDEBAR_WIDTH - 2 * VIDEO_PANEL_MARGIN
+        panel_height = int(panel_width / VIDEO_ASPECT_RATIO)
+        self.video_panel_size = (panel_width, panel_height)
+        self.video_panel = None
+        self.video_panel_status = None
+        if video_path:
+            if cv2 is None:
+                self.video_panel_status = "Install opencv-python to enable video playback"
+            elif not os.path.isfile(video_path):
+                self.video_panel_status = "Video file missing"
+            else:
+                try:
+                    self.video_panel = VideoPanel(video_path, self.video_panel_size, start_delay=video_delay)
+                    if not self.video_panel.enabled:
+                        self.video_panel_status = self.video_panel.error_message or "Video unavailable"
+                        self.video_panel = None
+                except Exception as exc:  # pragma: no cover - defensive
+                    self.video_panel = None
+                    self.video_panel_status = f"Video error: {exc}"
+        else:
+            self.video_panel_status = "Video unavailable"
 
     # ---------------------------------------
     # Utility visuals
@@ -364,6 +496,11 @@ class RhythmGame:
                 # Normal gameplay - Update Game Time (subtract accumulated pause time)
                 current_time = ((current_ticks - self.start_time_ms) / 1000.0) + self.latency_offset - self.total_pause_time
 
+            if self.video_panel:
+                panel_time = max(0.0, current_time if isinstance(current_time, (int, float)) else 0.0)
+                allow_advance = not self.countdown_active and not self.paused
+                self.video_panel.update(panel_time, allow_advance=allow_advance)
+
             # Check if game should end (all notes gone and song finished)
             if not self.countdown_active and not self.paused and not self.game_ended:
                 song_len = self.song.get_length() if self.song else 0
@@ -472,6 +609,9 @@ class RhythmGame:
             self.song.stop()
         pygame.mixer.music.stop()
         pygame.mixer.music.unload()
+
+        if self.video_panel:
+            self.video_panel.close()
         
         # Return the action for main.py to handle
         return self.end_screen_action
@@ -1070,18 +1210,63 @@ class RhythmGame:
             sidebar_rect = pygame.Rect(MAIN_WIDTH, 0, SIDEBAR_WIDTH, WINDOW_HEIGHT)
             pygame.draw.rect(self.screen, COLOR_SIDEBAR_BG, sidebar_rect)
 
-            # Sidebar: Score & Combo section
-            sidebar_header = pygame.Rect(MAIN_WIDTH, 0, SIDEBAR_WIDTH, 230)
-            pygame.draw.rect(self.screen, COLOR_SIDEBAR_HEADER_BG, sidebar_header)
-            pygame.draw.rect(self.screen, COLOR_SIDEBAR_BORDER, sidebar_header, 2)
+            video_width, video_height = self.video_panel_size
+            video_rect = pygame.Rect(
+                MAIN_WIDTH + VIDEO_PANEL_MARGIN,
+                20,
+                video_width,
+                video_height
+            )
+            pygame.draw.rect(self.screen, COLOR_SIDEBAR_HEADER_BG, video_rect)
+            pygame.draw.rect(self.screen, VIDEO_PANEL_BORDER, video_rect, 2)
+
+            if self.video_panel:
+                self.video_panel.draw(self.screen, video_rect)
+                if not self.video_panel.has_frame:
+                    self._queue_text(
+                        self._text_overlays,
+                        self.ui_font,
+                        "Loading video...",
+                        VIDEO_PANEL_TEXT,
+                        video_rect.centerx,
+                        video_rect.centery - 16,
+                        center=True,
+                        font_size=self.ui_font_size
+                    )
+            else:
+                pygame.draw.rect(self.screen, VIDEO_PANEL_BG, video_rect)
+                placeholder = self.video_panel_status or "Video unavailable"
+                lines = placeholder.split("\n")
+                for idx, line in enumerate(lines):
+                    self._queue_text(
+                        self._text_overlays,
+                        self.ui_font,
+                        line,
+                        VIDEO_PANEL_TEXT,
+                        video_rect.centerx,
+                        video_rect.y + 20 + idx * 32,
+                        center=True,
+                        font_size=self.ui_font_size
+                    )
+
+            stats_top = video_rect.bottom + 20
+            stats_rect = pygame.Rect(MAIN_WIDTH + 8, stats_top, SIDEBAR_WIDTH - 16, 230)
+            pygame.draw.rect(self.screen, COLOR_SIDEBAR_HEADER_BG, stats_rect)
+            pygame.draw.rect(self.screen, COLOR_SIDEBAR_BORDER, stats_rect, 2)
+
+            text_x = stats_rect.x + 12
+            score_y = stats_top + 16
+            combo_y = score_y + 44
+            multiplier_y = combo_y + 44
+            accuracy_y = multiplier_y + 44
 
             self._queue_text(
                 self._text_overlays,
                 self.ui_font,
                 f"Score: {self.score}",
                 COLOR_SIDEBAR_TEXT,
-                MAIN_WIDTH + 16,
-                24,
+                text_x,
+                score_y,
                 font_size=self.ui_font_size
             )
             self._queue_text(
@@ -1089,30 +1274,18 @@ class RhythmGame:
                 self.ui_font,
                 f"Combo: {self.combo}",
                 COLOR_SIDEBAR_TEXT,
-                MAIN_WIDTH + 16,
-                70,
+                text_x,
+                combo_y,
                 font_size=self.ui_font_size
             )
-            
-            # Multiplier with pulsing effect when > 1
+
             if self.multiplier > 1:
-                # Calculate pulse effect
-                # Pulse speed increases with multiplier (faster pulse at higher multipliers)
-                pulse_speed = 0.1 + (self.multiplier - 1) * 0.02  # Speed ranges from 0.1 to ~0.24
+                pulse_speed = 0.1 + (self.multiplier - 1) * 0.02
                 pulse_wave = math.sin(self.frame_count * pulse_speed)
-                
-                # Base size increase based on multiplier level
-                # Higher multiplier = bigger base size (MUCH BIGGER NOW)
-                size_boost = 1.0 + (self.multiplier - 1) * 0.35  # Ranges from 1.0 to ~3.45
-                
-                # Pulse amplitude increases with multiplier (MORE DRAMATIC)
-                pulse_amplitude = 0.1 + (self.multiplier - 1) * 0.05  # Ranges from 0.1 to ~0.45
-                
-                # Calculate final size
+                size_boost = 1.0 + (self.multiplier - 1) * 0.35
+                pulse_amplitude = 0.1 + (self.multiplier - 1) * 0.05
                 size_multiplier = size_boost + (pulse_wave * pulse_amplitude)
                 multiplier_font_size = int(self.ui_font_size * size_multiplier)
-                
-                # Color intensity also pulses (brighter when larger)
                 base_multiplier_r = COLOR_MULTIPLIER_ACTIVE[0]
                 color_intensity = base_multiplier_r + int(pulse_wave * 30)
                 color_intensity = max(0, min(255, color_intensity))
@@ -1122,24 +1295,21 @@ class RhythmGame:
                     COLOR_MULTIPLIER_ACTIVE[2]
                 )
             else:
-                # No effect at multiplier 1
                 multiplier_font_size = self.ui_font_size
                 multiplier_color = COLOR_MULTIPLIER_ACTIVE
-            
-            # Create font with adjusted size
+
             multiplier_font = pygame.font.Font(None, multiplier_font_size)
-            
+
             self._queue_text(
                 self._text_overlays,
                 multiplier_font,
                 f"x{self.multiplier}",
                 multiplier_color,
-                MAIN_WIDTH + 16,
-                110,
+                text_x,
+                multiplier_y,
                 font_size=multiplier_font_size
             )
 
-            accuracy_y = 170
             if self.missed_notes == 0:
                 accuracy_label = "Accuracy: 100%"
             else:
@@ -1150,7 +1320,7 @@ class RhythmGame:
                 self.ui_font,
                 accuracy_label,
                 COLOR_SIDEBAR_LABEL,
-                MAIN_WIDTH + 16,
+                text_x,
                 accuracy_y,
                 font_size=self.ui_font_size
             )
