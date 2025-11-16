@@ -407,6 +407,12 @@ class RhythmGame:
         if played:
             self.end_sfx_played = True
 
+    def _stop_end_sfx(self):
+        for sound in (getattr(self, "sfx_clap", None), getattr(self, "sfx_fireworks", None)):
+            if sound:
+                sound.stop()
+        self.end_sfx_played = False
+
     def _lane_center_x(self, lane):
         return lane * LANE_WIDTH + LANE_WIDTH // 2
 
@@ -553,9 +559,11 @@ class RhythmGame:
                     # End screen keyboard controls
                     elif self.game_ended:
                         if event.key == pygame.K_r:
+                            self._stop_end_sfx()
                             self.end_screen_action = "retry"
                             running = False
                         elif event.key == pygame.K_q or event.key == pygame.K_ESCAPE:
+                            self._stop_end_sfx()
                             self.end_screen_action = "menu"
                             running = False
                 
@@ -590,6 +598,7 @@ class RhythmGame:
                     # Check if click is on retry or main menu button
                     action = self._check_button_click(logical_x, logical_y)
                     if action:
+                        self._stop_end_sfx()
                         self.end_screen_action = action
                         running = False
 
