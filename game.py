@@ -346,7 +346,7 @@ class RhythmGame:
                 x = self._lane_center_x(lane)
                 fb_y = HIT_LINE_Y - 40
                 if is_perfect:
-                    feedback_text = f"Perfect x{applied_multiplier}"
+                    feedback_text = f"Perfect"
                     self.add_feedback(feedback_text, (255, 255, 140), x, fb_y, big=True)
                     self._register_perfect_hit()
                 else:
@@ -615,26 +615,11 @@ class RhythmGame:
         self._queue_text(
             self._text_overlays,
             self.ui_font,
-            f"Multiplier: x{self.multiplier}",
+            f"x{self.multiplier}",
             (180, 255, 220),
             MAIN_WIDTH + 16,
             110,
             font_size=self.ui_font_size
-        )
-        if self.multiplier >= MAX_MULTIPLIER:
-            multiplier_hint = "Max multiplier reached"
-        else:
-            remaining = max(0, PERFECTS_PER_MULTIPLIER - self.perfect_hits_in_combo)
-            multiplier_hint = f"{remaining} perfects to x{self.multiplier + 1}"
-
-        self._queue_text(
-            self._text_overlays,
-            self.label_font,
-            multiplier_hint,
-            (160, 200, 255),
-            MAIN_WIDTH + 16,
-            140,
-            font_size=self.label_font_size
         )
 
         accuracy_y = 170
