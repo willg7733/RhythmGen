@@ -44,7 +44,6 @@ VIDEO_PANEL_TEXT = (180, 200, 220)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSETS_DIR = os.path.join(BASE_DIR, "assets")
 SFX_CLAP_PATH = os.path.join(ASSETS_DIR, "clap.mp3")
-SFX_FIREWORKS_PATH = os.path.join(ASSETS_DIR, "fireworks.mp3")
 
 MAIN_WIDTH = WINDOW_WIDTH - SIDEBAR_WIDTH  # playfield area width
 PLAY_TOP = HEADER_HEIGHT 
@@ -251,6 +250,12 @@ class RhythmGame:
         if not pygame.get_init():
             pygame.init()
 
+        if not pygame.mixer.get_init():
+            try:
+                pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+            except pygame.error as exc:
+                print(f"WARNING: Failed to initialize mixer: {exc}")
+
         pygame.display.set_caption("RhythmGen")
         
         # Reuse existing display if available, otherwise create new one
@@ -340,7 +345,6 @@ class RhythmGame:
         self.end_button_font = pygame.font.Font(None, self.end_button_font_size)
 
         self.sfx_clap = self._load_sound(SFX_CLAP_PATH)
-        self.sfx_fireworks = self._load_sound(SFX_FIREWORKS_PATH)
         self.end_sfx_played = False
 
         # Visual feedback stores
@@ -399,19 +403,36 @@ class RhythmGame:
     def _play_end_sfx(self):
         if getattr(self, "end_sfx_played", False):
             return
-        played = False
-        for sound in (getattr(self, "sfx_clap", None), getattr(self, "sfx_fireworks", None)):
-            if sound:
-                sound.play()
-                played = True
-        if played:
+        clap = getattr(self, "sfx_clap", None)
+        if clap:
+            clap.play()
             self.end_sfx_played = True
 
     def _stop_end_sfx(self):
-        for sound in (getattr(self, "sfx_clap", None), getattr(self, "sfx_fireworks", None)):
-            if sound:
-                sound.stop()
+        clap = getattr(self, "sfx_clap", None)
+        if clap:
+            clap.stop()
         self.end_sfx_played = False
+
+    def _stop_all_audio(self):
+        try:
+            pygame.mixer.pause()
+            pygame.mixer.stop()
+            pygame.mixer.music.stop()
+            pygame.mixer.music.unload()
+        except pygame.error:
+            pass
+        if self.song:
+            try:
+                self.song.stop()
+            except pygame.error:
+                pass
+            self.song = None
+        self._stop_end_sfx()
+        try:
+            pygame.mixer.quit()
+        except pygame.error:
+            pass
 
     def _lane_center_x(self, lane):
         return lane * LANE_WIDTH + LANE_WIDTH // 2
@@ -512,17 +533,16 @@ class RhythmGame:
                 song_len = self.song.get_length() if self.song else 0
                 if len(self.notes) == 0 and current_time >= song_len:
                     self.game_ended = True
-                    if self.song:
-                        self.song.stop()
                     self._play_end_sfx()
 
             # Process Real Audio for Visualizer using the song playback time
             if not self.countdown_active and not self.paused and not self.game_ended:
                 self.current_band_levels = self.audio_analyzer.process_audio(current_time)
-            
-            # Handle Events
+                        
+            # Handle Events 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
+                    self._stop_all_audio()
                     self.end_screen_action = "quit"
                     running = False
 
@@ -548,6 +568,7 @@ class RhythmGame:
                     elif self.paused:
                         if event.key == pygame.K_m:
                             # Return to menu
+                            self._stop_all_audio()
                             self.end_screen_action = "menu"
                             running = False
                     
@@ -559,11 +580,9 @@ class RhythmGame:
                     # End screen keyboard controls
                     elif self.game_ended:
                         if event.key == pygame.K_r:
-                            self._stop_end_sfx()
                             self.end_screen_action = "retry"
                             running = False
                         elif event.key == pygame.K_q or event.key == pygame.K_ESCAPE:
-                            self._stop_end_sfx()
                             self.end_screen_action = "menu"
                             running = False
                 
@@ -584,6 +603,7 @@ class RhythmGame:
                         if self.song:
                             pygame.mixer.unpause()
                     elif action == "menu":
+                        self._stop_all_audio()
                         self.end_screen_action = "menu"
                         running = False
                 
@@ -598,7 +618,6 @@ class RhythmGame:
                     # Check if click is on retry or main menu button
                     action = self._check_button_click(logical_x, logical_y)
                     if action:
-                        self._stop_end_sfx()
                         self.end_screen_action = action
                         running = False
 
