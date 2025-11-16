@@ -104,6 +104,10 @@ def main():
                 if result == "retry":
                     print("Retrying...")
                     continue
+                elif result == "quit":
+                    print("Exiting RhythmGen from gameplay...")
+                    pygame.quit()
+                    sys.exit(0)
                 else:
                     # User chose quit or closed the window, return to main menu
                     print("Returning to main menu...")

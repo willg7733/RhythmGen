@@ -29,6 +29,11 @@ SIDEBAR_WIDTH = 260
 WINDOW_WIDTH = LANE_COUNT * LANE_WIDTH + SIDEBAR_WIDTH
 WINDOW_HEIGHT = 720
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ASSETS_DIR = os.path.join(BASE_DIR, "assets")
+SFX_CLAP_PATH = os.path.join(ASSETS_DIR, "clap.mp3")
+SFX_FIREWORKS_PATH = os.path.join(ASSETS_DIR, "fireworks.mp3")
+
 MAIN_WIDTH = WINDOW_WIDTH - SIDEBAR_WIDTH  # playfield area width
 PLAY_TOP = HEADER_HEIGHT 
 PLAY_BOTTOM = WINDOW_HEIGHT - FOOTER_HEIGHT
@@ -40,6 +45,87 @@ KEYS = [pygame.K_a, pygame.K_s, pygame.K_d, pygame.K_f]
 HIT_WINDOW = 0.15
 PERFECT_WINDOW = 0.05
 MISS_THRESHOLD = 0.20
+
+# ==================== COLOR PALETTE ====================
+# Backgrounds
+COLOR_BLACK = (0, 0, 0)
+COLOR_BACKGROUND_GRADIENT_TOP = COLOR_BLACK
+COLOR_BACKGROUND_GRADIENT_BOTTOM = COLOR_BLACK
+COLOR_COUNTDOWN_OVERLAY = (20, 20, 30)
+COLOR_PAUSE_OVERLAY = (15, 15, 25)
+COLOR_END_OVERLAY = (10, 10, 20)
+
+# Branding & Titles
+COLOR_TITLE_CYAN = (0, 187, 249)
+COLOR_TITLE_MAGENTA = (241, 91, 200)
+COLOR_TITLE_BRIGHT_CYAN = (100, 255, 200)
+COLOR_SUBTITLE = (180, 180, 220)
+
+# Header & Footer
+COLOR_HEADER_BG = COLOR_BLACK
+COLOR_HEADER_BORDER = COLOR_BLACK
+COLOR_FOOTER_BG = COLOR_BLACK
+COLOR_FOOTER_BORDER = COLOR_BLACK
+COLOR_FOOTER_TEXT = (200, 200, 220)
+
+# Sidebar
+COLOR_SIDEBAR_BG = COLOR_BLACK
+COLOR_SIDEBAR_HEADER_BG = COLOR_BLACK
+COLOR_SIDEBAR_BORDER = COLOR_BLACK
+COLOR_SIDEBAR_TEXT = (230, 230, 240)
+COLOR_SIDEBAR_LABEL = (200, 230, 255)
+COLOR_MULTIPLIER_ACTIVE = (180, 255, 220)
+COLOR_DIVIDER_LINE = (40, 40, 50)
+
+# Progress Bar
+COLOR_PROGRESS_BG = COLOR_BLACK
+COLOR_PROGRESS_FILL = (0, 187, 249)
+
+# Notes & Lanes
+COLOR_NOTE_MIN = (0, 130, 255)  # Used with intensity calculation
+COLOR_NOTE_MAX = (0, 255, 255)  # Used with intensity calculation
+COLOR_HIT_LINE = (255, 255, 255)
+COLOR_HIT_NOTE_PULSE = (255, 255, 255)  # With alpha
+COLOR_RIPPLE = (255, 255, 255)  # With alpha
+COLOR_LANE_LABEL = (180, 180, 200)
+
+# Feedback Text
+COLOR_FEEDBACK_PERFECT = (247, 229, 62)
+COLOR_FEEDBACK_GOOD = (42, 229, 132)
+COLOR_FEEDBACK_MISS = (229, 42, 57)
+
+# Accuracy Display
+COLOR_ACCURACY_PERFECT = (100, 255, 100)
+COLOR_ACCURACY_GREAT = (150, 255, 150)
+COLOR_ACCURACY_GOOD = (255, 255, 150)
+COLOR_ACCURACY_POOR = (255, 150, 150)
+
+
+# Button - Green (Resume/Retry)
+COLOR_BUTTON_GREEN_HOVER = (100, 200, 100)
+COLOR_BUTTON_GREEN_NORMAL = (60, 120, 60)
+COLOR_BUTTON_GREEN_BORDER = (150, 255, 150)
+
+COLOR_ONE = (100, 255, 100)    # Green
+COLOR_TWO = (255, 200, 100)    # Orange
+COLOR_THREE = (255, 100, 100)  # Red
+COLOR_GO = (100, 255, 255)     # Cyan
+
+# Button - Red (Menu/Quit)
+COLOR_BUTTON_RED_HOVER = (200, 100, 100)
+COLOR_BUTTON_RED_NORMAL = (120, 60, 60)
+COLOR_BUTTON_RED_BORDER = (255, 150, 150)
+
+# Button Text
+COLOR_TEXT_WHITE = (255, 255, 255)
+COLOR_TEXT_DARK_GRAY = (200, 200, 200)
+
+# End Screen
+COLOR_END_SCORE = (247, 229, 62)  # Yellow
+COLOR_END_CONGRATS = (241, 91, 181)  # Pink
+
+EQ_BAR = (0, 187, 249)
+# =======================================================
 
 
 
@@ -114,7 +200,7 @@ class RhythmGame:
         
         # End screen state
         self.game_ended = False
-        self.end_screen_action = None  # "retry" or "quit"
+        self.end_screen_action = None  # "retry", "menu", or "quit"
         
         # Animation state
         self.frame_count = 0  # For pulse animations
@@ -144,6 +230,10 @@ class RhythmGame:
         self.end_button_font_size = 42
         self.end_button_font = pygame.font.Font(None, self.end_button_font_size)
 
+        self.sfx_clap = self._load_sound(SFX_CLAP_PATH)
+        self.sfx_fireworks = self._load_sound(SFX_FIREWORKS_PATH)
+        self.end_sfx_played = False
+
         # Visual feedback stores
         self.feedbacks = []  # floating labels above notes
         self._text_overlays = []
@@ -151,7 +241,7 @@ class RhythmGame:
         self.ripples = []  # ripple effects traveling up and down lanes
         
         # Precompute subtle two-color gradient for main background
-        self.background = self._create_vertical_gradient((25, 10, 50), (5, 5, 10))
+        self.background = self._create_vertical_gradient(COLOR_BACKGROUND_GRADIENT_TOP, COLOR_BACKGROUND_GRADIENT_BOTTOM)
 
     # ---------------------------------------
     # Utility visuals
@@ -165,6 +255,25 @@ class RhythmGame:
             b = int(top_color[2] * (1 - t) + bottom_color[2] * t)
             pygame.draw.line(surf, (r, g, b), (0, y), (MAIN_WIDTH, y))
         return surf
+
+    def _load_sound(self, path):
+        if not path or not os.path.isfile(path):
+            return None
+        try:
+            return pygame.mixer.Sound(path)
+        except pygame.error:
+            return None
+
+    def _play_end_sfx(self):
+        if getattr(self, "end_sfx_played", False):
+            return
+        played = False
+        for sound in (getattr(self, "sfx_clap", None), getattr(self, "sfx_fireworks", None)):
+            if sound:
+                sound.play()
+                played = True
+        if played:
+            self.end_sfx_played = True
 
     def _lane_center_x(self, lane):
         return lane * LANE_WIDTH + LANE_WIDTH // 2
@@ -262,6 +371,7 @@ class RhythmGame:
                     self.game_ended = True
                     if self.song:
                         self.song.stop()
+                    self._play_end_sfx()
 
             # Process Real Audio for Visualizer using the song playback time
             if not self.countdown_active and not self.paused and not self.game_ended:
@@ -270,6 +380,7 @@ class RhythmGame:
             # Handle Events
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
+                    self.end_screen_action = "quit"
                     running = False
 
                 if event.type == pygame.KEYDOWN:
@@ -308,7 +419,7 @@ class RhythmGame:
                             self.end_screen_action = "retry"
                             running = False
                         elif event.key == pygame.K_q or event.key == pygame.K_ESCAPE:
-                            self.end_screen_action = "quit"
+                            self.end_screen_action = "menu"
                             running = False
                 
                 # Pause screen mouse controls
@@ -339,7 +450,7 @@ class RhythmGame:
                     logical_x = (mouse_x - offset_x) / scale
                     logical_y = (mouse_y - offset_y) / scale
                     
-                    # Check if click is on retry or quit button
+                    # Check if click is on retry or main menu button
                     action = self._check_button_click(logical_x, logical_y)
                     if action:
                         self.end_screen_action = action
@@ -361,11 +472,6 @@ class RhythmGame:
             self.song.stop()
         pygame.mixer.music.stop()
         pygame.mixer.music.unload()
-        
-        # Only quit pygame if we're not returning to menu
-        # The menu will handle pygame lifetime
-        if self.end_screen_action == "quit":
-            pygame.quit()
         
         # Return the action for main.py to handle
         return self.end_screen_action
@@ -414,16 +520,16 @@ class RhythmGame:
                 fb_y = HIT_LINE_Y - 40
                 if is_perfect:
                     feedback_text = f"Perfect"
-                    self.add_feedback(feedback_text, (255, 255, 140), x, fb_y, big=True)
+                    self.add_feedback(feedback_text, COLOR_FEEDBACK_PERFECT, x, fb_y, big=True)
                     self._register_perfect_hit()
                 else:
-                    self.add_feedback("Good", (120, 255, 180), x, fb_y, big=False)
+                    self.add_feedback("Good", COLOR_FEEDBACK_GOOD, x, fb_y, big=False)
                 return
         # Key pressed but no note to hit - just reset combo, don't count as miss
         self.combo = 0
         self._reset_multiplier()
         x = self._lane_center_x(lane)
-        self.add_feedback("Miss", (255, 100, 100), x, HIT_LINE_Y - 40, big=False)
+        self.add_feedback("Miss", COLOR_FEEDBACK_MISS, x, HIT_LINE_Y - 40, big=False)
 
     def check_misses(self, current_time):
         # ... (check_misses remains the same)
@@ -434,7 +540,7 @@ class RhythmGame:
                 self._reset_multiplier()
                 self._record_miss()
                 x = self._lane_center_x(note["lane"])
-                self.add_feedback("Miss", (255, 100, 100), x, HIT_LINE_Y - 40, big=False)
+                self.add_feedback("Miss", COLOR_FEEDBACK_MISS, x, HIT_LINE_Y - 40, big=False)
                 
     def _render_visualizer(self):
         """Renders the real-time, FFT-based Spectrum Bar Visualizer."""
@@ -442,19 +548,9 @@ class RhythmGame:
         padding = 14
         
         eq_area_rect = pygame.Rect(MAIN_WIDTH, WINDOW_HEIGHT - eq_area_height, SIDEBAR_WIDTH, eq_area_height)
-        pygame.draw.rect(self.screen, (35, 35, 45), eq_area_rect)
-        pygame.draw.rect(self.screen, (85, 85, 110), eq_area_rect, 2)
-
-        self._queue_text(
-            self._text_overlays,
-            self.label_font,
-            "Spectrum Analyzer",
-            (200, 200, 220),
-            MAIN_WIDTH + 16,
-            WINDOW_HEIGHT - eq_area_height + 10,
-            font_size=self.label_font_size
-        )
-
+        pygame.draw.rect(self.screen, COLOR_SIDEBAR_HEADER_BG, eq_area_rect)
+        pygame.draw.rect(self.screen, COLOR_SIDEBAR_BORDER, eq_area_rect, 2)
+        
         # --- Visualizer Logic using REAL audio data ---
         bars = len(self.current_band_levels)
         available_w = SIDEBAR_WIDTH - 2 * padding
@@ -485,26 +581,13 @@ class RhythmGame:
             # t represents the intensity level (0.0 to 1.0)
             t = level
             
-            r, g, b = 0, 0, 0
             
-            if t < 0.5: # 0.0 to 0.5: Green dominated
-                r = int(255 * t * 2) if t > 0.25 else 0 # starts adding red around 25%
-                g = int(150 + 100 * t * 2) # Stays bright green
-                b = 0
-            elif t < 0.7: # 0.5 to 0.7: Yellow/Amber
-                r = 255
-                g = int(255 - 100 * (t - 0.5) * 5) # Green starts falling slightly
-                b = 0
-            else: # 0.7 to 1.0: Red dominated (Clipping zone)
-                r = 255
-                g = int(100 * (1 - t)) # Green fades out
-                b = 0
 
-            color = (max(0, min(255, r)), max(0, min(255, g)), b) # Clamp for safety
+            color = EQ_BAR
             
             pygame.draw.rect(self.screen, color, (x, y, bar_w, h), border_radius=0)
         
-        pygame.draw.line(self.screen, (40, 40, 50), (MAIN_WIDTH + padding, base_y), (WINDOW_WIDTH - padding, base_y), 1)
+        pygame.draw.line(self.screen, COLOR_DIVIDER_LINE, (MAIN_WIDTH + padding, base_y), (WINDOW_WIDTH - padding, base_y), 1)
 
     def _render_countdown(self):
         """Render the countdown overlay (3, 2, 1, GO) with semi-transparent background."""
@@ -513,23 +596,23 @@ class RhythmGame:
         # Determine countdown text
         if countdown_elapsed < 1.0:
             text = "3"
-            color = (255, 100, 100)  # Red
+            color = COLOR_THREE  # Red
         elif countdown_elapsed < 2.0:
             text = "2"
-            color = (255, 200, 100)  # Orange
+            color = COLOR_TWO  # Orange
         elif countdown_elapsed < 3.0:
             text = "1"
-            color = (100, 255, 100)  # Green
+            color = COLOR_ONE  # Green
         elif countdown_elapsed < 3.5:
             text = "GO!"
-            color = (100, 255, 255)  # Cyan
+            color = COLOR_GO  # Cyan
         else:
             return  # Countdown finished
         
         # Draw semi-transparent overlay across entire screen
         overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT))
         overlay.set_alpha(180)  # Semi-transparent
-        overlay.fill((20, 20, 30))  # Dark gray
+        overlay.fill(COLOR_COUNTDOWN_OVERLAY)  # Dark gray
         self.screen.blit(overlay, (0, 0))
         
         # Draw countdown text in center
@@ -552,7 +635,7 @@ class RhythmGame:
         # Draw semi-transparent overlay across entire screen
         overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT))
         overlay.set_alpha(200)  # More opaque than countdown
-        overlay.fill((15, 15, 25))  # Very dark gray
+        overlay.fill(COLOR_PAUSE_OVERLAY)
         self.screen.blit(overlay, (0, 0))
         
         # Draw pause text in center
@@ -564,7 +647,7 @@ class RhythmGame:
             self._text_overlays,
             self.pause_title_font,
             "Paused",
-            (255, 255, 100),  # Yellow
+            COLOR_END_SCORE,
             center_x,
             center_y - 120,
             center=True,
@@ -586,11 +669,11 @@ class RhythmGame:
         resume_y = center_y - 20
         resume_rect = pygame.Rect(center_x - button_width / 2, resume_y, button_width, button_height)
         resume_hover = resume_rect.collidepoint(logical_mouse_x, logical_mouse_y)
-        resume_color = (100, 200, 100) if resume_hover else (60, 120, 60)
-        resume_text_color = (255, 255, 255) if resume_hover else (200, 200, 200)
+        resume_color = COLOR_BUTTON_GREEN_HOVER if resume_hover else COLOR_BUTTON_GREEN_NORMAL
+        resume_text_color = COLOR_TEXT_WHITE if resume_hover else COLOR_TEXT_DARK_GRAY
         
         pygame.draw.rect(self.screen, resume_color, resume_rect, border_radius=12)
-        pygame.draw.rect(self.screen, (150, 255, 150), resume_rect, 3, border_radius=12)
+        pygame.draw.rect(self.screen, COLOR_BUTTON_GREEN_BORDER, resume_rect, 3, border_radius=12)
         
         self._queue_text(
             self._text_overlays,
@@ -607,11 +690,11 @@ class RhythmGame:
         menu_y = center_y + 70
         menu_rect = pygame.Rect(center_x - button_width / 2, menu_y, button_width, button_height)
         menu_hover = menu_rect.collidepoint(logical_mouse_x, logical_mouse_y)
-        menu_color = (200, 100, 100) if menu_hover else (120, 60, 60)
-        menu_text_color = (255, 255, 255) if menu_hover else (200, 200, 200)
+        menu_color = COLOR_BUTTON_RED_HOVER if menu_hover else COLOR_BUTTON_RED_NORMAL
+        menu_text_color = COLOR_TEXT_WHITE if menu_hover else COLOR_TEXT_DARK_GRAY
         
         pygame.draw.rect(self.screen, menu_color, menu_rect, border_radius=12)
-        pygame.draw.rect(self.screen, (255, 150, 150), menu_rect, 3, border_radius=12)
+        pygame.draw.rect(self.screen, COLOR_BUTTON_RED_BORDER, menu_rect, 3, border_radius=12)
         
         self._queue_text(
             self._text_overlays,
@@ -660,15 +743,15 @@ class RhythmGame:
         retry_y = center_y + 120
         retry_rect = pygame.Rect(retry_x, retry_y, button_width, button_height)
         
-        # Quit button
-        quit_x = center_x + button_spacing / 2
-        quit_y = center_y + 120
-        quit_rect = pygame.Rect(quit_x, quit_y, button_width, button_height)
+        # Main Menu button
+        menu_x = center_x + button_spacing / 2
+        menu_y = center_y + 120
+        menu_rect = pygame.Rect(menu_x, menu_y, button_width, button_height)
         
         if retry_rect.collidepoint(x, y):
             return "retry"
-        elif quit_rect.collidepoint(x, y):
-            return "quit"
+        elif menu_rect.collidepoint(x, y):
+            return "menu"
         return None
     
     def _check_pause_button_click(self, logical_x, logical_y):
@@ -698,7 +781,7 @@ class RhythmGame:
         # Draw semi-transparent overlay across entire screen
         overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT))
         overlay.set_alpha(220)  # Very opaque
-        overlay.fill((10, 10, 20))  # Very dark
+        overlay.fill(COLOR_END_OVERLAY)
         self.screen.blit(overlay, (0, 0))
         
         center_x = WINDOW_WIDTH / 2
@@ -709,7 +792,7 @@ class RhythmGame:
             self._text_overlays,
             self.end_title_font,
             "Song Complete!",
-            (100, 255, 200),  # Bright cyan
+            COLOR_TITLE_BRIGHT_CYAN,
             center_x,
             center_y - 200,
             center=True,
@@ -722,7 +805,7 @@ class RhythmGame:
             self._text_overlays,
             self.end_stats_font,
             f"Final Score: {self.score}",
-            (255, 255, 100),  # Yellow
+            COLOR_END_SCORE,
             center_x,
             center_y - 100,
             center=True,
@@ -734,7 +817,7 @@ class RhythmGame:
             self._text_overlays,
             self.end_stats_font,
             f"Max Combo: {self.max_combo}",
-            (255, 150, 255),  # Pink
+            COLOR_END_CONGRATS,
             center_x,
             center_y - 40,
             center=True,
@@ -744,15 +827,15 @@ class RhythmGame:
         # Accuracy
         if self.missed_notes == 0:
             accuracy_text = "Accuracy: 100%"
-            accuracy_color = (100, 255, 100)  # Bright green for perfect
+            accuracy_color = COLOR_ACCURACY_PERFECT
         else:
             accuracy_text = f"Accuracy: {self.accuracy:.1f}%"
             if self.accuracy >= 90:
-                accuracy_color = (150, 255, 150)  # Light green
+                accuracy_color = COLOR_ACCURACY_GREAT
             elif self.accuracy >= 75:
-                accuracy_color = (255, 255, 150)  # Light yellow
+                accuracy_color = COLOR_ACCURACY_GOOD
             else:
-                accuracy_color = (255, 150, 150)  # Light red
+                accuracy_color = COLOR_ACCURACY_POOR
         
         self._queue_text(
             self._text_overlays,
@@ -782,11 +865,11 @@ class RhythmGame:
         logical_mouse_y = (mouse_pos[1] - offset_y) / scale
         
         retry_hover = retry_rect.collidepoint(logical_mouse_x, logical_mouse_y)
-        retry_color = (100, 200, 100) if retry_hover else (60, 120, 60)
-        retry_text_color = (255, 255, 255) if retry_hover else (200, 200, 200)
+        retry_color = COLOR_BUTTON_GREEN_HOVER if retry_hover else COLOR_BUTTON_GREEN_NORMAL
+        retry_text_color = COLOR_TEXT_WHITE if retry_hover else COLOR_TEXT_DARK_GRAY
         
         pygame.draw.rect(self.screen, retry_color, retry_rect, border_radius=10)
-        pygame.draw.rect(self.screen, (150, 255, 150), retry_rect, 3, border_radius=10)
+        pygame.draw.rect(self.screen, COLOR_BUTTON_GREEN_BORDER, retry_rect, 3, border_radius=10)
         
         self._queue_text(
             self._text_overlays,
@@ -799,25 +882,25 @@ class RhythmGame:
             font_size=self.end_button_font_size
         )
         
-        # Quit button
-        quit_x = center_x + button_spacing / 2
-        quit_y = center_y + 120
-        quit_rect = pygame.Rect(quit_x, quit_y, button_width, button_height)
+        # Main Menu button
+        menu_x = center_x + button_spacing / 2
+        menu_y = center_y + 120
+        menu_rect = pygame.Rect(menu_x, menu_y, button_width, button_height)
         
-        quit_hover = quit_rect.collidepoint(logical_mouse_x, logical_mouse_y)
-        quit_color = (200, 100, 100) if quit_hover else (120, 60, 60)
-        quit_text_color = (255, 255, 255) if quit_hover else (200, 200, 200)
+        menu_hover = menu_rect.collidepoint(logical_mouse_x, logical_mouse_y)
+        menu_color = COLOR_BUTTON_RED_HOVER if menu_hover else COLOR_BUTTON_RED_NORMAL
+        menu_text_color = COLOR_TEXT_WHITE if menu_hover else COLOR_TEXT_DARK_GRAY
         
-        pygame.draw.rect(self.screen, quit_color, quit_rect, border_radius=10)
-        pygame.draw.rect(self.screen, (255, 150, 150), quit_rect, 3, border_radius=10)
+        pygame.draw.rect(self.screen, menu_color, menu_rect, border_radius=10)
+        pygame.draw.rect(self.screen, COLOR_BUTTON_RED_BORDER, menu_rect, 3, border_radius=10)
         
         self._queue_text(
             self._text_overlays,
             self.end_button_font,
-            "Quit (Q)",
-            quit_text_color,
-            quit_x + button_width / 2,
-            quit_y + button_height / 2 - 16,
+            "Main Menu (Q)",
+            menu_text_color,
+            menu_x + button_width / 2,
+            menu_y + button_height / 2 - 16,
             center=True,
             font_size=self.end_button_font_size
         )
@@ -838,13 +921,13 @@ class RhythmGame:
             for i in range(LANE_COUNT):
                 pygame.draw.rect(
                     self.screen,
-                    (180, 180, 200),
+                    COLOR_LANE_LABEL,
                     (i * LANE_WIDTH, PLAY_TOP, LANE_WIDTH, PLAY_BOTTOM - PLAY_TOP),
                     2
                 )
 
             # Hit line (where notes should be hit)
-            pygame.draw.line(self.screen, (255, 255, 255), (0, HIT_LINE_Y), (MAIN_WIDTH, HIT_LINE_Y), 2)
+            pygame.draw.line(self.screen, COLOR_HIT_LINE, (0, HIT_LINE_Y), (MAIN_WIDTH, HIT_LINE_Y), 2)
 
             # Ripple effects traveling up and down lanes
             for ripple in self.ripples[:]:
@@ -870,14 +953,14 @@ class RhythmGame:
                 # Draw upward ripple (if in bounds)
                 if y_up >= PLAY_TOP:
                     ripple_surface_up = pygame.Surface((LANE_WIDTH, thickness), pygame.SRCALPHA)
-                    ripple_color = (255, 255, 255, alpha)
+                    ripple_color = (*COLOR_RIPPLE, alpha)
                     pygame.draw.rect(ripple_surface_up, ripple_color, (0, 0, LANE_WIDTH, thickness))
                     self.screen.blit(ripple_surface_up, (lane_x, y_up))
                 
                 # Draw downward ripple (if in bounds)
                 if y_down <= PLAY_BOTTOM:
                     ripple_surface_down = pygame.Surface((LANE_WIDTH, thickness), pygame.SRCALPHA)
-                    ripple_color = (255, 255, 255, alpha)
+                    ripple_color = (*COLOR_RIPPLE, alpha)
                     pygame.draw.rect(ripple_surface_down, ripple_color, (0, 0, LANE_WIDTH, thickness))
                     self.screen.blit(ripple_surface_down, (lane_x, y_down))
                 
@@ -929,7 +1012,7 @@ class RhythmGame:
                 
                 # Draw pulsing note with fade
                 pulse_surface = pygame.Surface((pulse_width, pulse_height), pygame.SRCALPHA)
-                color_with_alpha = (255, 255, 255, alpha)  # White with fading alpha
+                color_with_alpha = (*COLOR_HIT_NOTE_PULSE, alpha)
                 pygame.draw.rect(pulse_surface, color_with_alpha, (0, 0, pulse_width, pulse_height), border_radius=5)
                 self.screen.blit(pulse_surface, (pulse_x, pulse_y))
                 
@@ -960,14 +1043,14 @@ class RhythmGame:
 
             # Footer: Progress box beneath everything (playfield)
             footer_rect = pygame.Rect(0, WINDOW_HEIGHT - FOOTER_HEIGHT, MAIN_WIDTH, FOOTER_HEIGHT)
-            pygame.draw.rect(self.screen, (40, 40, 55), footer_rect)
-            pygame.draw.rect(self.screen, (90, 90, 120), footer_rect, 2)
+            pygame.draw.rect(self.screen, COLOR_FOOTER_BG, footer_rect)
+            pygame.draw.rect(self.screen, COLOR_FOOTER_BORDER, footer_rect, 2)
 
             self._queue_text(
                 self._text_overlays,
                 self.label_font,
                 "Progress",
-                (200, 200, 220),
+                COLOR_FOOTER_TEXT,
                 12,
                 WINDOW_HEIGHT - FOOTER_HEIGHT + 10,
                 font_size=self.label_font_size
@@ -980,23 +1063,23 @@ class RhythmGame:
             bar_y = WINDOW_HEIGHT - FOOTER_HEIGHT + 36
             bar_w = MAIN_WIDTH - 24
             bar_h = 18
-            pygame.draw.rect(self.screen, (65, 65, 85), (bar_x, bar_y, bar_w, bar_h), border_radius=6)
-            pygame.draw.rect(self.screen, (0, 220, 220), (bar_x, bar_y, int(bar_w * progress), bar_h), border_radius=6)
+            pygame.draw.rect(self.screen, COLOR_PROGRESS_BG, (bar_x, bar_y, bar_w, bar_h), border_radius=6)
+            pygame.draw.rect(self.screen, COLOR_PROGRESS_FILL, (bar_x, bar_y, int(bar_w * progress), bar_h), border_radius=6)
 
             # Sidebar
             sidebar_rect = pygame.Rect(MAIN_WIDTH, 0, SIDEBAR_WIDTH, WINDOW_HEIGHT)
-            pygame.draw.rect(self.screen, (22, 22, 28), sidebar_rect)
+            pygame.draw.rect(self.screen, COLOR_SIDEBAR_BG, sidebar_rect)
 
             # Sidebar: Score & Combo section
             sidebar_header = pygame.Rect(MAIN_WIDTH, 0, SIDEBAR_WIDTH, 230)
-            pygame.draw.rect(self.screen, (35, 35, 45), sidebar_header)
-            pygame.draw.rect(self.screen, (85, 85, 110), sidebar_header, 2)
+            pygame.draw.rect(self.screen, COLOR_SIDEBAR_HEADER_BG, sidebar_header)
+            pygame.draw.rect(self.screen, COLOR_SIDEBAR_BORDER, sidebar_header, 2)
 
             self._queue_text(
                 self._text_overlays,
                 self.ui_font,
                 f"Score: {self.score}",
-                (230, 230, 240),
+                COLOR_SIDEBAR_TEXT,
                 MAIN_WIDTH + 16,
                 24,
                 font_size=self.ui_font_size
@@ -1005,7 +1088,7 @@ class RhythmGame:
                 self._text_overlays,
                 self.ui_font,
                 f"Combo: {self.combo}",
-                (230, 230, 240),
+                COLOR_SIDEBAR_TEXT,
                 MAIN_WIDTH + 16,
                 70,
                 font_size=self.ui_font_size
@@ -1030,12 +1113,18 @@ class RhythmGame:
                 multiplier_font_size = int(self.ui_font_size * size_multiplier)
                 
                 # Color intensity also pulses (brighter when larger)
-                color_intensity = 180 + int(pulse_wave * 30)
-                multiplier_color = (color_intensity, 255, 220)
+                base_multiplier_r = COLOR_MULTIPLIER_ACTIVE[0]
+                color_intensity = base_multiplier_r + int(pulse_wave * 30)
+                color_intensity = max(0, min(255, color_intensity))
+                multiplier_color = (
+                    color_intensity,
+                    COLOR_MULTIPLIER_ACTIVE[1],
+                    COLOR_MULTIPLIER_ACTIVE[2]
+                )
             else:
                 # No effect at multiplier 1
                 multiplier_font_size = self.ui_font_size
-                multiplier_color = (180, 255, 220)
+                multiplier_color = COLOR_MULTIPLIER_ACTIVE
             
             # Create font with adjusted size
             multiplier_font = pygame.font.Font(None, multiplier_font_size)
@@ -1060,7 +1149,7 @@ class RhythmGame:
                 self._text_overlays,
                 self.ui_font,
                 accuracy_label,
-                (200, 230, 255),
+                COLOR_SIDEBAR_LABEL,
                 MAIN_WIDTH + 16,
                 accuracy_y,
                 font_size=self.ui_font_size
@@ -1069,14 +1158,14 @@ class RhythmGame:
             self._render_visualizer()
 
         # Header bar with logo drawn after notes so it always sits on top
-        pygame.draw.rect(self.screen, (45, 45, 70), (0, 0, MAIN_WIDTH, HEADER_HEIGHT))
-        pygame.draw.line(self.screen, (120, 120, 200), (0, HEADER_HEIGHT - 1), (MAIN_WIDTH, HEADER_HEIGHT - 1), 1)
+        pygame.draw.rect(self.screen, COLOR_HEADER_BG, (0, 0, MAIN_WIDTH, HEADER_HEIGHT))
+        pygame.draw.line(self.screen, COLOR_HEADER_BORDER, (0, HEADER_HEIGHT - 1), (MAIN_WIDTH, HEADER_HEIGHT - 1), 1)
         center_x = MAIN_WIDTH / 2
         self._queue_text(
             self._text_overlays,
             self.logo_font,
             "RhythmGen",
-            (0, 255, 200),
+            COLOR_TITLE_CYAN,
             center_x + 2,
             12,
             center=True,
@@ -1086,7 +1175,7 @@ class RhythmGame:
             self._text_overlays,
             self.logo_font,
             "RhythmGen",
-            (255, 0, 200),
+            COLOR_TITLE_MAGENTA,
             center_x,
             10,
             center=True,
@@ -1103,6 +1192,7 @@ class RhythmGame:
         
         # Render end screen if game ended
         if self.game_ended:
+            self._play_end_sfx()
             self._render_end_screen()
 
         scale, offset_x, offset_y = self._present_canvas()
@@ -1139,7 +1229,7 @@ class RhythmGame:
         offset_x = (display_w - scaled_w) // 2
         offset_y = (display_h - scaled_h) // 2
 
-        self.display_surface.fill((0, 0, 0))
+        self.display_surface.fill(COLOR_BLACK)
         self.display_surface.blit(canvas, (offset_x, offset_y))
 
         scale_factor = scaled_w / WINDOW_WIDTH if WINDOW_WIDTH else 1.0

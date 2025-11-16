@@ -3,11 +3,96 @@ os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 import pygame
 import sys
 import threading
+import math
 from youtube import suggest_youtube_videos
 
 # Window dimensions
-WINDOW_WIDTH = 740
+WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 720
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ASSETS_DIR = os.path.join(BASE_DIR, "assets")
+MENU_FONT_PATH = os.path.join(ASSETS_DIR, "inter.ttf")
+
+# ==================== COLOR PALETTE ====================
+# Backgrounds
+COLOR_BLACK = (0, 0, 0)
+COLOR_BACKGROUND_GRADIENT_TOP = COLOR_BLACK
+COLOR_BACKGROUND_GRADIENT_BOTTOM = COLOR_BLACK
+COLOR_TRANSPARENT_KEY = COLOR_BLACK
+
+# Background color cycle (menu)
+BACKGROUND_CYCLE_COLORS = [
+    (10, 18, 38),   # Deep blue
+    (30, 8, 35),    # Midnight magenta
+    (8, 28, 30)     # Teal accent
+]
+BACKGROUND_CYCLE_SEGMENT_DURATION = 8.0  # seconds per color blend
+
+# Branding & Titles
+COLOR_TITLE_CYAN = (0, 187, 249)
+COLOR_TITLE_MAGENTA = (241, 91, 200)
+COLOR_TITLE_BRIGHT_CYAN = (100, 255, 200)
+COLOR_SUBTITLE = (180, 180, 220)
+
+# Text
+COLOR_TEXT_WHITE = (255, 255, 255)
+COLOR_TEXT_LIGHT_GRAY = (200, 200, 220)
+COLOR_TEXT_NORMAL_GRAY = (220, 220, 220)
+COLOR_TEXT_DARK_GRAY = (200, 200, 200)
+COLOR_TEXT_DISABLED = (100, 100, 100)
+COLOR_TEXT_PLACEHOLDER = (100, 100, 120)
+COLOR_TEXT_INFO = (180, 180, 200)
+
+# Highlight Colors
+COLOR_YELLOW = (255, 255, 100)
+COLOR_PINK = (255, 150, 255)
+COLOR_ORANGE = (241, 91, 200)
+
+# Loading Spinner (shared)
+SEARCH_SPINNER_RADIUS = 24
+SEARCH_SPINNER_SPEED = 0.07
+SEARCH_SPINNER_MAX_DOT = 6
+SEARCH_SPINNER_MIN_DOT = 2
+
+# Button - Green (Play/Search/Start)
+COLOR_BUTTON_GREEN_HOVER = (100, 200, 100)
+COLOR_BUTTON_GREEN_NORMAL = (60, 120, 60)
+COLOR_BUTTON_GREEN_BORDER = (150, 255, 150)
+
+# Button - Blue (How To Play/Back)
+COLOR_BUTTON_BLUE_HOVER = (100, 100, 200)
+COLOR_BUTTON_BLUE_NORMAL = (60, 60, 120)
+COLOR_BUTTON_BLUE_BORDER = (150, 150, 255)
+
+# Button - Red (Quit/Cancel)
+COLOR_BUTTON_RED_HOVER = (200, 100, 100)
+COLOR_BUTTON_RED_NORMAL = (120, 60, 60)
+COLOR_BUTTON_RED_BORDER = (255, 150, 150)
+
+# Button - Disabled
+COLOR_BUTTON_DISABLED = (40, 40, 40)
+COLOR_BUTTON_DISABLED_BORDER = (80, 80, 80)
+
+# Input Box
+COLOR_INPUT_BG = (40, 40, 60)
+COLOR_INPUT_BORDER = (100, 200, 255)
+
+# Search Results
+COLOR_SEARCH_SELECTED_BG = (80, 150, 100)
+COLOR_SEARCH_SELECTED_BORDER = (150, 255, 150)
+COLOR_SEARCH_HOVER_BG = (70, 70, 90)
+COLOR_SEARCH_HOVER_BORDER = (120, 120, 200)
+COLOR_SEARCH_NORMAL_BG = (50, 50, 70)
+COLOR_SEARCH_NORMAL_BORDER = (90, 90, 110)
+
+# Scrollbar
+COLOR_SCROLLBAR_TRACK = (60, 60, 80)
+COLOR_SCROLLBAR_THUMB = (150, 150, 200)
+
+# Loading Animation
+COLOR_LOADING_SPINNER = (100, 200, 255)  # Note: alpha added dynamically
+# =======================================================
 
 class MainMenu:
     def __init__(self):
@@ -30,16 +115,19 @@ class MainMenu:
         self.screen = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT)).convert()
         
         # Fonts
+        self.font_path = MENU_FONT_PATH if os.path.isfile(MENU_FONT_PATH) else None
+        self._font_cache = {}
         self.title_font_size = 120
-        self.title_font = pygame.font.Font(None, self.title_font_size)
+        self.title_font = self._load_font(self.title_font_size)
         self.subtitle_font_size = 36
-        self.subtitle_font = pygame.font.Font(None, self.subtitle_font_size)
+        self.subtitle_font = self._load_font(self.subtitle_font_size)
         self.button_font_size = 48
-        self.button_font = pygame.font.Font(None, self.button_font_size)
+        self.button_font = self._load_font(self.button_font_size)
         self.instructions_title_font_size = 64
-        self.instructions_title_font = pygame.font.Font(None, self.instructions_title_font_size)
+        self.instructions_title_font = self._load_font(self.instructions_title_font_size)
         self.instructions_font_size = 32
-        self.instructions_font = pygame.font.Font(None, self.instructions_font_size)
+        self.loading_font_size = 24
+        self.instructions_font = self._load_font(self.instructions_font_size)
         
         # Animation
         self.frame_count = 0
@@ -61,8 +149,10 @@ class MainMenu:
         self.instructions_scroll = 0  # Scroll offset for instructions
         self.max_instructions_scroll = 0  # Maximum scroll value
         
-        # Create gradient background
-        self.background = self._create_vertical_gradient((25, 10, 50), (5, 5, 10))
+        # Create animated gradient background
+        self.background = self._create_vertical_gradient(COLOR_BACKGROUND_GRADIENT_TOP, COLOR_BACKGROUND_GRADIENT_BOTTOM)
+        self._background_cycle_start = pygame.time.get_ticks()
+        self._update_background(force=True)
     
     def _create_vertical_gradient(self, top_color, bottom_color):
         surf = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT))
@@ -73,6 +163,89 @@ class MainMenu:
             b = int(top_color[2] * (1 - t) + bottom_color[2] * t)
             pygame.draw.line(surf, (r, g, b), (0, y), (WINDOW_WIDTH, y))
         return surf
+
+    def _lerp_color(self, color_a, color_b, t):
+        return tuple(int(color_a[i] + (color_b[i] - color_a[i]) * t) for i in range(3))
+
+    def _update_background(self, force=False):
+        if not BACKGROUND_CYCLE_COLORS:
+            return
+        if not hasattr(self, "_background_cycle_start") or force:
+            self._background_cycle_start = pygame.time.get_ticks()
+
+        elapsed = (pygame.time.get_ticks() - self._background_cycle_start) / 1000.0
+        segment_duration = max(0.1, BACKGROUND_CYCLE_SEGMENT_DURATION)
+        segment_count = len(BACKGROUND_CYCLE_COLORS)
+        total_cycle = segment_duration * segment_count
+        cycle_time = elapsed % total_cycle
+        segment_index = int(cycle_time // segment_duration)
+        next_index = (segment_index + 1) % segment_count
+        segment_progress = (cycle_time % segment_duration) / segment_duration
+
+        base_color = self._lerp_color(
+            BACKGROUND_CYCLE_COLORS[segment_index],
+            BACKGROUND_CYCLE_COLORS[next_index],
+            segment_progress
+        )
+
+        # Create subtle gradient by lightening and darkening the base color
+        lighten = 0
+        darken = 0
+        top_color = tuple(min(255, c + lighten) for c in base_color)
+        bottom_color = tuple(max(0, c - darken) for c in base_color)
+
+        self.background = self._create_vertical_gradient(top_color, bottom_color)
+
+    def _draw_processing_spinner(self, center_x, center_y, radius=50, segments=12, speed=0.05,
+                                 max_dot_size=8, min_dot_size=3):
+        for i in range(segments):
+            angle = (self.frame_count * speed) + (i * 2 * math.pi / segments)
+            x = center_x + math.cos(angle) * radius
+            y = center_y + math.sin(angle) * radius
+
+            alpha = int(255 * (1 - i / segments))
+            size = max(min_dot_size, int(max_dot_size - (max_dot_size - min_dot_size) * (i / segments)))
+
+            circle_surface = pygame.Surface((size * 2, size * 2), pygame.SRCALPHA)
+            pygame.draw.circle(circle_surface, (*COLOR_LOADING_SPINNER, alpha), (size, size), size)
+            self.screen.blit(circle_surface, (x - size, y - size))
+
+    def _render_loading_spinner(self, center_x, center_y, text="Searching..."):
+        font = self._load_font(28)
+        text_surf = font.render(text, True, COLOR_TEXT_LIGHT_GRAY)
+        spacing = 12
+        spinner_diameter = SEARCH_SPINNER_RADIUS * 2
+        total_width = spinner_diameter + spacing + text_surf.get_width()
+        spinner_center_x = center_x - total_width / 2 + SEARCH_SPINNER_RADIUS
+        spinner_center_y = center_y
+        
+        self._draw_processing_spinner(
+            spinner_center_x,
+            spinner_center_y,
+            radius=SEARCH_SPINNER_RADIUS,
+            segments=12,
+            speed=SEARCH_SPINNER_SPEED,
+            max_dot_size=SEARCH_SPINNER_MAX_DOT,
+            min_dot_size=SEARCH_SPINNER_MIN_DOT
+        )
+        
+        text_x = spinner_center_x + SEARCH_SPINNER_RADIUS + spacing
+        text_y = center_y - text_surf.get_height() / 2
+        self.screen.blit(text_surf, (text_x, text_y))
+    
+    def _load_font(self, size, path=None):
+        font_path = path or self.font_path
+        cache_key = (font_path, size)
+        if cache_key not in self._font_cache:
+            resolved_path = font_path if font_path and os.path.isfile(font_path) else None
+            try:
+                self._font_cache[cache_key] = pygame.font.Font(resolved_path, size)
+            except (FileNotFoundError, OSError):
+                self._font_cache[cache_key] = pygame.font.Font(None, size)
+        return self._font_cache[cache_key]
+
+    def _center_text_y(self, rect_y, rect_height, font):
+        return rect_y + rect_height / 2 - font.get_height() / 2
     
     def _get_scale_and_offset(self):
         """Calculate the current scale and offset for the display."""
@@ -95,7 +268,7 @@ class MainMenu:
         
         return scale, offset_x, offset_y
     
-    def _queue_text(self, overlay_list, font, text, color, x, y, *, center=False, alpha=255, font_size=None):
+    def _queue_text(self, overlay_list, font, text, color, x, y, *, center=False, alpha=255, font_size=None, font_path=None):
         overlay_list.append({
             "font": font,
             "text": text,
@@ -104,7 +277,8 @@ class MainMenu:
             "y": y,
             "center": center,
             "alpha": alpha,
-            "font_size": font_size
+            "font_size": font_size,
+            "font_path": font_path or self.font_path
         })
     
     def _draw_text_overlays(self, scale, offset_x, offset_y):
@@ -114,11 +288,12 @@ class MainMenu:
             color = entry["color"]
             alpha = entry["alpha"]
             font_size = entry.get("font_size")
+            font_path = entry.get("font_path") or self.font_path
             
             effective_font = font
             if scale != 1.0 and font_size:
                 scaled_size = max(1, int(round(font_size * scale)))
-                effective_font = pygame.font.Font(None, scaled_size)
+                effective_font = self._load_font(scaled_size, font_path)
             
             surf = effective_font.render(text, True, color)
             if alpha < 255:
@@ -167,7 +342,7 @@ class MainMenu:
         offset_x = (display_w - scaled_w) // 2
         offset_y = (display_h - scaled_h) // 2
         
-        self.display_surface.fill((0, 0, 0))
+        self.display_surface.fill(COLOR_BLACK)
         self.display_surface.blit(canvas, (offset_x, offset_y))
         
         scale_factor = scaled_w / WINDOW_WIDTH if WINDOW_WIDTH else 1.0
@@ -192,8 +367,8 @@ class MainMenu:
                 results_area_top = 220
                 result_height = 80
                 result_spacing = 10
-                
-                for i, video in enumerate(self.search_results[:5]):  # Show max 5 results
+
+                for i, video in enumerate(self.search_results[:10]):  # Show max 10 results
                     result_y = results_area_top + i * (result_height + result_spacing) - self.search_scroll
                     result_rect = pygame.Rect(70, result_y, WINDOW_WIDTH - 140, result_height)
                     
@@ -212,9 +387,9 @@ class MainMenu:
             cancel_y = search_y
             cancel_rect = pygame.Rect(center_x + button_spacing / 2, cancel_y, button_width, button_height)
             
-            if search_rect.collidepoint(x, y):
+            if search_rect.collidepoint(x, y) and not self.is_searching:
                 return "search"
-            elif cancel_rect.collidepoint(x, y):
+            elif cancel_rect.collidepoint(x, y) and not self.is_searching:
                 return "cancel"
         else:
             # Main menu buttons
@@ -249,7 +424,7 @@ class MainMenu:
             self._text_overlays,
             self.instructions_title_font,
             "How To Play",
-            (100, 255, 200),
+            COLOR_TITLE_BRIGHT_CYAN,
             center_x,
             60,
             center=True,
@@ -260,6 +435,9 @@ class MainMenu:
         scroll_area_top = 140
         scroll_area_bottom = WINDOW_HEIGHT - 150  # Leave room for back button
         scroll_area_height = scroll_area_bottom - scroll_area_top
+        scroll_area_margin = 60
+        scroll_area_left = scroll_area_margin
+        scroll_area_width = WINDOW_WIDTH - (scroll_area_margin * 2)
         
         # Instructions text
         instructions = [
@@ -313,10 +491,12 @@ class MainMenu:
         self.instructions_scroll = max(0, min(self.instructions_scroll, self.max_instructions_scroll))
         
         # Create clipping mask for scrollable area
-        scroll_surface = pygame.Surface((WINDOW_WIDTH, scroll_area_height))
-        scroll_surface.fill((0, 0, 0))  # Will be transparent where we draw
-        scroll_surface.set_colorkey((0, 0, 0))
+        scroll_surface = pygame.Surface((scroll_area_width, scroll_area_height))
+        scroll_surface.fill(COLOR_TRANSPARENT_KEY)  # Will be transparent where we draw
+        scroll_surface.set_colorkey(COLOR_TRANSPARENT_KEY)
         
+        text_padding = 16
+
         # Draw instructions on scroll surface
         y_offset = -self.instructions_scroll
         for i, line in enumerate(instructions):
@@ -326,50 +506,54 @@ class MainMenu:
             
             # Different color for section headers
             if line.endswith(":"):
-                color = (255, 255, 100)
+                color = COLOR_YELLOW
             elif line == "Welcome to RhythmGen!" or "Ready to play?" in line:
-                color = (255, 150, 255)
+                color = COLOR_PINK
             else:
-                color = (220, 220, 220)
+                color = COLOR_TEXT_NORMAL_GRAY
             
             # Only render if visible in scroll area
             if -line_height <= y_offset <= scroll_area_height:
                 text_surf = self.instructions_font.render(line, True, color)
-                text_x = center_x - text_surf.get_width() / 2
+                available_width = scroll_area_width - (text_padding * 2)
+                if text_surf.get_width() >= available_width:
+                    text_x = text_padding
+                else:
+                    text_x = text_padding + (available_width - text_surf.get_width()) / 2
                 scroll_surface.blit(text_surf, (text_x, y_offset))
             
             y_offset += line_height
         
         # Blit scroll surface to screen
-        self.screen.blit(scroll_surface, (0, scroll_area_top))
+        self.screen.blit(scroll_surface, (scroll_area_left, scroll_area_top))
         
         # Draw scroll indicators if content is scrollable
         if self.max_instructions_scroll > 0:
             # Show scroll up indicator
             if self.instructions_scroll > 0:
                 indicator_text = "▲ Scroll Up"
-                indicator_surf = self.instructions_font.render(indicator_text, True, (150, 150, 200))
+                indicator_surf = self.instructions_font.render(indicator_text, True, COLOR_SCROLLBAR_THUMB)
                 self.screen.blit(indicator_surf, (center_x - indicator_surf.get_width() / 2, scroll_area_top - 30))
             
             # Show scroll down indicator
             if self.instructions_scroll < self.max_instructions_scroll:
                 indicator_text = "▼ Scroll Down"
-                indicator_surf = self.instructions_font.render(indicator_text, True, (150, 150, 200))
+                indicator_surf = self.instructions_font.render(indicator_text, True, COLOR_SCROLLBAR_THUMB)
                 self.screen.blit(indicator_surf, (center_x - indicator_surf.get_width() / 2, scroll_area_bottom + 5))
             
             # Draw scrollbar
-            scrollbar_x = WINDOW_WIDTH - 30
+            scrollbar_x = scroll_area_left + scroll_area_width + 10
             scrollbar_height = scroll_area_height - 20
             scrollbar_y = scroll_area_top + 10
             
             # Background track
-            pygame.draw.rect(self.screen, (60, 60, 80), 
+            pygame.draw.rect(self.screen, COLOR_SCROLLBAR_TRACK, 
                            (scrollbar_x, scrollbar_y, 8, scrollbar_height), border_radius=4)
             
             # Thumb
             thumb_height = max(30, int((scroll_area_height / total_content_height) * scrollbar_height))
             thumb_y = scrollbar_y + int((self.instructions_scroll / self.max_instructions_scroll) * (scrollbar_height - thumb_height))
-            pygame.draw.rect(self.screen, (150, 150, 200), 
+            pygame.draw.rect(self.screen, COLOR_SCROLLBAR_THUMB, 
                            (scrollbar_x - 2, thumb_y, 12, thumb_height), border_radius=6)
         
         # Back button
@@ -385,11 +569,11 @@ class MainMenu:
         logical_mouse_y = (mouse_pos[1] - offset_y) / scale
         
         back_hover = back_rect.collidepoint(logical_mouse_x, logical_mouse_y)
-        back_color = (100, 100, 200) if back_hover else (60, 60, 120)
-        back_text_color = (255, 255, 255) if back_hover else (200, 200, 200)
+        back_color = COLOR_BUTTON_BLUE_HOVER if back_hover else COLOR_BUTTON_BLUE_NORMAL
+        back_text_color = COLOR_TEXT_WHITE if back_hover else COLOR_TEXT_DARK_GRAY
         
         pygame.draw.rect(self.screen, back_color, back_rect, border_radius=12)
-        pygame.draw.rect(self.screen, (150, 150, 255), back_rect, 3, border_radius=12)
+        pygame.draw.rect(self.screen, COLOR_BUTTON_BLUE_BORDER, back_rect, 3, border_radius=12)
         
         self._queue_text(
             self._text_overlays,
@@ -397,7 +581,7 @@ class MainMenu:
             "Back",
             back_text_color,
             center_x,
-            back_y + button_height / 2 - 18,
+            self._center_text_y(back_y, button_height, self.button_font),
             center=True,
             font_size=self.button_font_size
         )
@@ -413,7 +597,7 @@ class MainMenu:
             self._text_overlays,
             self.instructions_title_font,
             title_text,
-            (100, 255, 200),
+            COLOR_TITLE_BRIGHT_CYAN,
             center_x,
             40,
             center=True,
@@ -426,7 +610,7 @@ class MainMenu:
                 self._text_overlays,
                 self.instructions_font,
                 "Enter a search query to find videos:",
-                (200, 200, 220),
+                COLOR_TEXT_LIGHT_GRAY,
                 center_x,
                 center_y - 120,
                 center=True,
@@ -441,13 +625,13 @@ class MainMenu:
         input_rect = pygame.Rect(input_x, input_y, input_width, input_height)
         
         # Draw input box
-        pygame.draw.rect(self.screen, (40, 40, 60), input_rect, border_radius=8)
-        pygame.draw.rect(self.screen, (100, 200, 255), input_rect, 3, border_radius=8)
+        pygame.draw.rect(self.screen, COLOR_INPUT_BG, input_rect, border_radius=8)
+        pygame.draw.rect(self.screen, COLOR_INPUT_BORDER, input_rect, 3, border_radius=8)
         
         # Draw text in input box
         if self.url_input_text:
             # Render the text
-            text_surf = self.instructions_font.render(self.url_input_text, True, (255, 255, 255))
+            text_surf = self.instructions_font.render(self.url_input_text, True, COLOR_TEXT_WHITE)
             
             # If text is too wide, show only the end portion
             if text_surf.get_width() > input_width - 20:
@@ -469,7 +653,7 @@ class MainMenu:
         else:
             # Placeholder text
             placeholder_text = "Search for a song..." if not self.search_results else "Search for a song..."
-            placeholder_surf = self.instructions_font.render(placeholder_text, True, (100, 100, 120))
+            placeholder_surf = self.instructions_font.render(placeholder_text, True, COLOR_TEXT_PLACEHOLDER)
             text_x = input_x + 10
             text_y = input_y + input_height / 2 - placeholder_surf.get_height() / 2
             self.screen.blit(placeholder_surf, (text_x, text_y))
@@ -477,12 +661,12 @@ class MainMenu:
         # Blinking cursor
         if int(self.frame_count / 30) % 2 == 0:
             if self.url_input_text:
-                cursor_text_surf = self.instructions_font.render(self.url_input_text, True, (255, 255, 255))
+                cursor_text_surf = self.instructions_font.render(self.url_input_text, True, COLOR_TEXT_WHITE)
                 cursor_x = input_x + 10 + min(cursor_text_surf.get_width(), input_width - 20)
             else:
                 cursor_x = input_x + 10
             cursor_y = input_y + 10
-            pygame.draw.line(self.screen, (255, 255, 255), 
+            pygame.draw.line(self.screen, COLOR_TEXT_WHITE, 
                            (cursor_x, cursor_y), (cursor_x, cursor_y + 40), 2)
         
         # Show search results if available
@@ -493,11 +677,11 @@ class MainMenu:
             result_spacing = 10
             
             # Instructions for results
-            instruction_surf = self.instructions_font.render("Click a video to select:", True, (200, 200, 220))
+            instruction_surf = self.instructions_font.render("Click a video to select:", True, COLOR_TEXT_LIGHT_GRAY)
             self.screen.blit(instruction_surf, (center_x - instruction_surf.get_width() / 2, 190))
             
             # Draw search results
-            for i, video in enumerate(self.search_results[:5]):  # Show max 5 results
+            for i, video in enumerate(self.search_results[:10]):  # Show max 10 results
                 result_y = results_area_top + i * (result_height + result_spacing) - self.search_scroll
                 
                 # Only render if visible
@@ -517,14 +701,14 @@ class MainMenu:
                 
                 # Background color
                 if is_selected:
-                    bg_color = (80, 150, 100)
-                    border_color = (150, 255, 150)
+                    bg_color = COLOR_SEARCH_SELECTED_BG
+                    border_color = COLOR_SEARCH_SELECTED_BORDER
                 elif is_hover:
-                    bg_color = (70, 70, 90)
-                    border_color = (120, 120, 200)
+                    bg_color = COLOR_SEARCH_HOVER_BG
+                    border_color = COLOR_SEARCH_HOVER_BORDER
                 else:
-                    bg_color = (50, 50, 70)
-                    border_color = (90, 90, 110)
+                    bg_color = COLOR_SEARCH_NORMAL_BG
+                    border_color = COLOR_SEARCH_NORMAL_BORDER
                 
                 pygame.draw.rect(self.screen, bg_color, result_rect, border_radius=8)
                 pygame.draw.rect(self.screen, border_color, result_rect, 2, border_radius=8)
@@ -533,7 +717,7 @@ class MainMenu:
                 title = video['title']
                 if len(title) > 50:
                     title = title[:47] + "..."
-                title_surf = self.instructions_font.render(title, True, (255, 255, 255))
+                title_surf = self.instructions_font.render(title, True, COLOR_TEXT_WHITE)
                 self.screen.blit(title_surf, (result_rect.x + 10, result_rect.y + 10))
                 
                 # Video author and length
@@ -542,14 +726,9 @@ class MainMenu:
                 info = f"{video['author']} • {minutes}:{seconds:02d}"
                 if len(info) > 60:
                     info = info[:57] + "..."
-                info_font = pygame.font.Font(None, 24)
-                info_surf = info_font.render(info, True, (180, 180, 200))
+                info_font = self._load_font(24)
+                info_surf = info_font.render(info, True, COLOR_TEXT_INFO)
                 self.screen.blit(info_surf, (result_rect.x + 10, result_rect.y + 45))
-        
-        # Loading indicator
-        if self.is_searching:
-            loading_surf = self.instructions_title_font.render("Searching...", True, (255, 200, 100))
-            self.screen.blit(loading_surf, (center_x - loading_surf.get_width() / 2, center_y))
         
         # Buttons
         button_width = 250
@@ -564,6 +743,11 @@ class MainMenu:
         
         # Button Y position depends on whether we have search results
         button_y = WINDOW_HEIGHT / 2 + 120 if not self.search_results else WINDOW_HEIGHT - 100
+
+        # Loading indicator (spinner)
+        if self.is_searching:
+            spinner_y = max(180, button_y - 60)
+            self._render_loading_spinner(center_x, spinner_y, "Searching...")
         
         # Search button (changes to "Start Game" if video selected)
         search_rect = pygame.Rect(center_x - button_width - button_spacing / 2, button_y, button_width, button_height)
@@ -572,19 +756,21 @@ class MainMenu:
         # Determine button text and state
         if self.selected_video_index >= 0:
             search_text = "Start Game"
-            search_enabled = True
+            search_logic_enabled = True
         else:
             search_text = "Search"
-            search_enabled = len(self.url_input_text.strip()) > 0
+            search_logic_enabled = len(self.url_input_text.strip()) > 0
+
+        search_enabled = search_logic_enabled and not self.is_searching
         
         if search_enabled:
-            search_color = (100, 200, 100) if search_hover else (60, 120, 60)
-            search_text_color = (255, 255, 255) if search_hover else (200, 200, 200)
-            search_border_color = (150, 255, 150)
+            search_color = COLOR_BUTTON_GREEN_HOVER if search_hover else COLOR_BUTTON_GREEN_NORMAL
+            search_text_color = COLOR_TEXT_WHITE if search_hover else COLOR_TEXT_DARK_GRAY
+            search_border_color = COLOR_BUTTON_GREEN_BORDER
         else:
-            search_color = (40, 40, 40)
-            search_text_color = (100, 100, 100)
-            search_border_color = (80, 80, 80)
+            search_color = COLOR_BUTTON_DISABLED
+            search_text_color = COLOR_TEXT_DISABLED
+            search_border_color = COLOR_BUTTON_DISABLED_BORDER
         
         pygame.draw.rect(self.screen, search_color, search_rect, border_radius=12)
         pygame.draw.rect(self.screen, search_border_color, search_rect, 3, border_radius=12)
@@ -595,7 +781,7 @@ class MainMenu:
             search_text,
             search_text_color,
             center_x - button_width / 2 - button_spacing / 2,
-            button_y + button_height / 2 - 18,
+            self._center_text_y(button_y, button_height, self.button_font),
             center=True,
             font_size=self.button_font_size
         )
@@ -603,11 +789,19 @@ class MainMenu:
         # Cancel button
         cancel_rect = pygame.Rect(center_x + button_spacing / 2, button_y, button_width, button_height)
         cancel_hover = cancel_rect.collidepoint(logical_mouse_x, logical_mouse_y)
-        cancel_color = (200, 100, 100) if cancel_hover else (120, 60, 60)
-        cancel_text_color = (255, 255, 255) if cancel_hover else (200, 200, 200)
+        cancel_enabled = not self.is_searching
+        
+        if cancel_enabled:
+            cancel_color = COLOR_BUTTON_RED_HOVER if cancel_hover else COLOR_BUTTON_RED_NORMAL
+            cancel_text_color = COLOR_TEXT_WHITE if cancel_hover else COLOR_TEXT_DARK_GRAY
+            cancel_border_color = COLOR_BUTTON_RED_BORDER
+        else:
+            cancel_color = COLOR_BUTTON_DISABLED
+            cancel_text_color = COLOR_TEXT_DISABLED
+            cancel_border_color = COLOR_BUTTON_DISABLED_BORDER
         
         pygame.draw.rect(self.screen, cancel_color, cancel_rect, border_radius=12)
-        pygame.draw.rect(self.screen, (255, 150, 150), cancel_rect, 3, border_radius=12)
+        pygame.draw.rect(self.screen, cancel_border_color, cancel_rect, 3, border_radius=12)
         
         self._queue_text(
             self._text_overlays,
@@ -615,7 +809,7 @@ class MainMenu:
             "Cancel",
             cancel_text_color,
             center_x + button_width / 2 + button_spacing / 2,
-            button_y + button_height / 2 - 18,
+            self._center_text_y(button_y, button_height, self.button_font),
             center=True,
             font_size=self.button_font_size
         )
@@ -628,7 +822,7 @@ class MainMenu:
         # Semi-transparent overlay
         overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT))
         overlay.set_alpha(220)
-        overlay.fill((10, 10, 20))
+        overlay.fill(COLOR_BLACK)
         self.screen.blit(overlay, (0, 0))
         
         # Animated loading text
@@ -641,11 +835,11 @@ class MainMenu:
             self._text_overlays,
             self.instructions_title_font,
             loading_text,
-            (100, 255, 200),
+            COLOR_TEXT_LIGHT_GRAY,
             center_x,
-            center_y - 80,
+            center_y + 40,
             center=True,
-            font_size=self.instructions_title_font_size
+            font_size=self.loading_font_size
         )
         
         # Loading message
@@ -654,28 +848,15 @@ class MainMenu:
                 self._text_overlays,
                 self.instructions_font,
                 self.loading_message,
-                (200, 200, 220),
+                COLOR_TEXT_LIGHT_GRAY,
                 center_x,
-                center_y + 20,
+                center_y + 80,
                 center=True,
-                font_size=self.instructions_font_size
+                font_size=self.loading_font_size
             )
         
-        # Spinning circle animation
-        radius = 50
-        segments = 12
-        for i in range(segments):
-            angle = (self.frame_count * 0.05) + (i * 2 * math.pi / segments)
-            x = center_x + math.cos(angle) * radius
-            y = center_y - 20 + math.sin(angle) * radius
-            
-            # Fade effect
-            alpha = int(255 * (1 - i / segments))
-            size = 8 - int(4 * (i / segments))
-            
-            circle_surface = pygame.Surface((size * 2, size * 2), pygame.SRCALPHA)
-            pygame.draw.circle(circle_surface, (100, 200, 255, alpha), (size, size), size)
-            self.screen.blit(circle_surface, (x - size, y - size))
+        # Spinning circle animation (shared)
+        self._draw_processing_spinner(center_x, center_y - 20)
     
     def update_loading(self, message):
         """Update the loading screen with a new message."""
@@ -728,7 +909,7 @@ class MainMenu:
             self._text_overlays,
             self.title_font,
             "RhythmGen",
-            (0, 255, 200),
+            COLOR_TITLE_CYAN,
             center_x + 3,
             title_y + 3,
             center=True,
@@ -738,23 +919,11 @@ class MainMenu:
             self._text_overlays,
             self.title_font,
             "RhythmGen",
-            (255, 0, 200),
+            COLOR_TITLE_MAGENTA,
             center_x,
             title_y,
             center=True,
             font_size=self.title_font_size
-        )
-        
-        # Subtitle
-        self._queue_text(
-            self._text_overlays,
-            self.subtitle_font,
-            "AI-Powered Rhythm Game",
-            (180, 180, 220),
-            center_x,
-            title_y + 90,
-            center=True,
-            font_size=self.subtitle_font_size
         )
         
         # Buttons
@@ -775,11 +944,11 @@ class MainMenu:
         # Play button
         play_rect = pygame.Rect(center_x - button_width / 2, start_y, button_width, button_height)
         play_hover = play_rect.collidepoint(logical_mouse_x, logical_mouse_y)
-        play_color = (100, 200, 100) if play_hover else (60, 120, 60)
-        play_text_color = (255, 255, 255) if play_hover else (200, 200, 200)
+        play_color = COLOR_BUTTON_GREEN_HOVER if play_hover else COLOR_BUTTON_GREEN_NORMAL
+        play_text_color = COLOR_TEXT_WHITE if play_hover else COLOR_TEXT_DARK_GRAY
         
         pygame.draw.rect(self.screen, play_color, play_rect, border_radius=12)
-        pygame.draw.rect(self.screen, (150, 255, 150), play_rect, 3, border_radius=12)
+        pygame.draw.rect(self.screen, COLOR_BUTTON_GREEN_BORDER, play_rect, 3, border_radius=12)
         
         self._queue_text(
             self._text_overlays,
@@ -787,7 +956,7 @@ class MainMenu:
             "Play",
             play_text_color,
             center_x,
-            start_y + button_height / 2 - 18,
+            self._center_text_y(start_y, button_height, self.button_font),
             center=True,
             font_size=self.button_font_size
         )
@@ -796,11 +965,11 @@ class MainMenu:
         howto_y = start_y + button_height + button_spacing
         howto_rect = pygame.Rect(center_x - button_width / 2, howto_y, button_width, button_height)
         howto_hover = howto_rect.collidepoint(logical_mouse_x, logical_mouse_y)
-        howto_color = (100, 100, 200) if howto_hover else (60, 60, 120)
-        howto_text_color = (255, 255, 255) if howto_hover else (200, 200, 200)
+        howto_color = COLOR_BUTTON_BLUE_HOVER if howto_hover else COLOR_BUTTON_BLUE_NORMAL
+        howto_text_color = COLOR_TEXT_WHITE if howto_hover else COLOR_TEXT_DARK_GRAY
         
         pygame.draw.rect(self.screen, howto_color, howto_rect, border_radius=12)
-        pygame.draw.rect(self.screen, (150, 150, 255), howto_rect, 3, border_radius=12)
+        pygame.draw.rect(self.screen, COLOR_BUTTON_BLUE_BORDER, howto_rect, 3, border_radius=12)
         
         self._queue_text(
             self._text_overlays,
@@ -808,7 +977,7 @@ class MainMenu:
             "How To Play",
             howto_text_color,
             center_x,
-            howto_y + button_height / 2 - 18,
+            self._center_text_y(howto_y, button_height, self.button_font),
             center=True,
             font_size=self.button_font_size
         )
@@ -817,11 +986,11 @@ class MainMenu:
         quit_y = start_y + (button_height + button_spacing) * 2
         quit_rect = pygame.Rect(center_x - button_width / 2, quit_y, button_width, button_height)
         quit_hover = quit_rect.collidepoint(logical_mouse_x, logical_mouse_y)
-        quit_color = (200, 100, 100) if quit_hover else (120, 60, 60)
-        quit_text_color = (255, 255, 255) if quit_hover else (200, 200, 200)
+        quit_color = COLOR_BUTTON_RED_HOVER if quit_hover else COLOR_BUTTON_RED_NORMAL
+        quit_text_color = COLOR_TEXT_WHITE if quit_hover else COLOR_TEXT_DARK_GRAY
         
         pygame.draw.rect(self.screen, quit_color, quit_rect, border_radius=12)
-        pygame.draw.rect(self.screen, (255, 150, 150), quit_rect, 3, border_radius=12)
+        pygame.draw.rect(self.screen, COLOR_BUTTON_RED_BORDER, quit_rect, 3, border_radius=12)
         
         self._queue_text(
             self._text_overlays,
@@ -829,7 +998,7 @@ class MainMenu:
             "Quit",
             quit_text_color,
             center_x,
-            quit_y + button_height / 2 - 18,
+            self._center_text_y(quit_y, button_height, self.button_font),
             center=True,
             font_size=self.button_font_size
         )
@@ -854,6 +1023,7 @@ class MainMenu:
         
         while running:
             self.frame_count += 1
+            self._update_background()
             
             # Handle events
             for event in pygame.event.get():
@@ -876,6 +1046,8 @@ class MainMenu:
                     # Handle text input on URL screen
                     elif self.showing_url_input:
                         if event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER:
+                            if self.is_searching:
+                                continue
                             # Search or start game based on state
                             if self.selected_video_index >= 0:
                                 # Start game with selected video
@@ -978,6 +1150,8 @@ class MainMenu:
                             self.selected_video_index = -1
                             self.search_scroll = 0
                         elif action == "search":
+                            if self.is_searching:
+                                continue
                             if self.selected_video_index >= 0:
                                 # Start game with selected video
                                 selected_video = self.search_results[self.selected_video_index]
@@ -992,6 +1166,8 @@ class MainMenu:
                                 # Perform search
                                 self.is_searching = True
                         elif action == "cancel":
+                            if self.is_searching:
+                                continue
                             self.showing_url_input = False
                             self.url_input_text = ""
                             self.search_results = []
