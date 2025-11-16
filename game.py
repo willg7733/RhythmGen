@@ -3,7 +3,7 @@ os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 import pygame
 import math
 import numpy as np
-import pyaudio
+import librosa
 
 # -----------------------------------------
 # RhythmGen - Full Game File (Enhanced UI)
@@ -37,79 +37,62 @@ MISS_THRESHOLD = 0.20
 
 # --- Audio Analyzer Constants ---
 CHUNK = 1024 # Samples per buffer
-FORMAT = pyaudio.paInt16
-CHANNELS = 1
 RATE = 44100 # Sample rate
 # Frequency band ranges (Hz) for an 8-bar visualizer
 # This maps frequency to the visual bars
 FREQ_BANDS = [60, 150, 400, 1000, 2500, 6000, 12000, 20000] 
 # Note: FREQ_BANDS length determines the number of bars to draw
+# Minimum non-zero amplitude fed into log calculations to avoid domain errors
+MIN_BAND_AMPLITUDE = 1e-6
 # -------------------------------------
 
 class AudioAnalyzer:
-    """Handles real-time audio input, FFT, and spectrum calculation with robust device selection."""
-    def __init__(self):
-        self.p = pyaudio.PyAudio()
-        self.stream = None
+    """Analyzes the downloaded song audio to drive the spectrum visualizer."""
+
+    def __init__(self, audio_path):
+        self.audio_path = audio_path
         self.band_levels = [0.0] * len(FREQ_BANDS)
-        self.fft_cache = [0] * (CHUNK // 2)
+        self.fft_cache = np.zeros(CHUNK // 2)
+        self.window = np.hanning(CHUNK)
+        self.audio_data, self.sample_rate = self._load_audio(audio_path)
+        self.total_samples = len(self.audio_data) if self.audio_data is not None else 0
 
-        # 1. Attempt to find the best input device index
-        input_index = self._find_input_device_index()
-        
-        if input_index is not None:
-            # 2. Open the audio stream using the found index
-            print(f"🎤 Opening audio stream on device index: {input_index}")
-            self.stream = self.p.open(
-                format=FORMAT,
-                channels=CHANNELS,
-                rate=RATE,
-                input=True,
-                frames_per_buffer=CHUNK,
-                input_device_index=input_index,  # Use the found index
-                # Explicitly setting the default device will reduce ALSA errors
-                # on some systems.
-            )
+    def _load_audio(self, audio_path):
+        if not audio_path or not os.path.exists(audio_path):
+            print("❌ WARNING: Audio file for visualizer not found. Bars will stay idle.")
+            return None, RATE
+
+        try:
+            samples, sr = librosa.load(audio_path, sr=RATE, mono=True)
+            if samples.size == 0:
+                print("❌ WARNING: Loaded audio is empty. Visualizer disabled.")
+                return None, sr
+            return samples, sr
+        except Exception as exc:
+            print(f"❌ WARNING: Failed to decode audio for visualizer: {exc}")
+            return None, RATE
+
+    def process_audio(self, playback_time):
+        if self.audio_data is None:
+            self.band_levels = [0.0] * len(FREQ_BANDS)
+            return self.band_levels
+
+        playback_time = max(0.0, playback_time)
+        start_idx = int(playback_time * self.sample_rate)
+
+        if start_idx >= self.total_samples:
+            window = np.zeros(CHUNK)
         else:
-            print("❌ WARNING: No suitable input audio device found. Visualizer will remain silent.")
+            end_idx = start_idx + CHUNK
+            window = self.audio_data[start_idx:end_idx]
+            if window.shape[0] < CHUNK:
+                window = np.pad(window, (0, CHUNK - window.shape[0]))
 
-    def _find_input_device_index(self):
-        """Attempts to find the default or first available input device."""
-        
-        # 1. Try to get the default input device
-        try:
-            default_index = self.p.get_default_input_device_info()['index']
-            if self.p.get_device_info_by_index(default_index).get('maxInputChannels') > 0:
-                print(f"✅ Found default input device at index: {default_index}")
-                return default_index
-        except Exception:
-            # If default fails (common on non-standard setups)
-            pass 
-
-        # 2. Iterate through all devices and return the first one that supports input
-        for i in range(self.p.get_device_count()):
-            device_info = self.p.get_device_info_by_index(i)
-            if device_info.get('maxInputChannels') > 0:
-                print(f"🔍 Falling back to first available input device at index: {i}")
-                return i
-                
-        return None # No input device found
-
-    def process_audio(self):
-        if self.stream is None:
-            return
-
-        try:
-            # ... (rest of process_audio remains the same)
-            data = self.stream.read(CHUNK, exception_on_overflow=False)
-            data_int = np.frombuffer(data, dtype=np.int16)
-            fft_data = np.abs(np.fft.fft(data_int))
-            self.fft_cache = fft_data[:CHUNK // 2] 
-            self.band_levels = self._calculate_bands(self.fft_cache)
-
-        except IOError as e:
-            print(f"IOError in audio stream: {e}")
-            pass
+        window = window * self.window
+        fft_data = np.abs(np.fft.fft(window))
+        self.fft_cache = fft_data[:CHUNK // 2]
+        self.band_levels = self._calculate_bands(self.fft_cache)
+        return self.band_levels
 
     def _calculate_bands(self, fft_data):
         """Map FFT data to specific frequency bands."""
@@ -129,19 +112,20 @@ class AudioAnalyzer:
                 # Calculate the average amplitude in this frequency range
                 band_sum = np.sum(fft_data[start_bin:bin_index])
                 band_count = bin_index - start_bin
-                
+
                 # Normalize and scale the average amplitude. Use log scale for realism.
-                avg_amplitude = (band_sum / band_count)
-                
+                # Clamp to MIN_BAND_AMPLITUDE so silence doesn't produce log-domain errors.
+                avg_amplitude = max(band_sum / band_count, MIN_BAND_AMPLITUDE)
+
                 # Apply a gain and clamp the result (visual normalization)
-                levels[i] = min(1.0, math.log10(avg_amplitude) * 0.05) 
+                log_level = math.log10(avg_amplitude) * 0.50
+                levels[i] = max(0.0, min(1.0, log_level)) 
                 
         return levels
         
     def close(self):
-        self.stream.stop_stream()
-        self.stream.close()
-        self.p.terminate()
+        # Nothing to clean up when analyzing from a file, but keep the method for API parity.
+        pass
 
 class RhythmGame:
     def __init__(self, beatmap, audio_path, latency_offset=0.0):
@@ -158,9 +142,9 @@ class RhythmGame:
 
         self.notes = beatmap[:]  # copy
         
-        # Initialize the external audio analyzer
-        self.audio_analyzer = AudioAnalyzer() 
-        self.current_band_levels = self.audio_analyzer.band_levels # Reference for rendering
+        # Initialize the external audio analyzer using the downloaded song
+        self.audio_analyzer = AudioAnalyzer(audio_path)
+        self.current_band_levels = list(self.audio_analyzer.band_levels)
         
         try:
             self.song = pygame.mixer.Sound(audio_path)
@@ -241,8 +225,8 @@ class RhythmGame:
             # 1. Update Game Time
             current_time = ((pygame.time.get_ticks() - self.start_time_ms) / 1000.0) + self.latency_offset
 
-            # 2. Process Real Audio for Visualizer
-            self.audio_analyzer.process_audio()
+            # 2. Process Real Audio for Visualizer using the song playback time
+            self.current_band_levels = self.audio_analyzer.process_audio(current_time)
             
             # 3. Handle Events
             for event in pygame.event.get():

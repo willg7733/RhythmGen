@@ -3,4 +3,3 @@ librosa
 numpy
 pygame
 soundfile
-pyaudio
