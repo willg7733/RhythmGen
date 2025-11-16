@@ -17,7 +17,7 @@ NOTE_HEIGHT = 22
 NOTE_SPEED = 320         # pixels per second
 BASE_NOTE_SCORE = 100
 MAX_MULTIPLIER = 8
-PERFECTS_PER_MULTIPLIER = 10
+PERFECTS_PER_MULTIPLIER = 5
 NOTE_ENTRY_MIN_Y = -NOTE_HEIGHT  # allow notes to begin just off-screen at the top
 HEADER_HEIGHT = 70
 FOOTER_HEIGHT = 70
@@ -178,6 +178,11 @@ class RhythmGame:
         self.missed_notes = 0
         self.accuracy = 100.0
         self.start_time_ms = 0
+        
+        # Countdown state
+        self.countdown_active = True
+        self.countdown_start_time = 0
+        self.countdown_duration = 3.0  # 3 seconds countdown (3, 2, 1, GO)
 
         # Fonts (store base sizes so overlays can scale cleanly)
         self.ui_font_size = 30
@@ -191,6 +196,8 @@ class RhythmGame:
         self.label_font = pygame.font.Font(None, self.label_font_size)
         self.feedback_font_small = pygame.font.Font(None, self.feedback_font_small_size)
         self.feedback_font_large = pygame.font.Font(None, self.feedback_font_large_size)
+        self.countdown_font_size = 180
+        self.countdown_font = pygame.font.Font(None, self.countdown_font_size)
 
         # Visual feedback stores
         self.feedbacks = []  # floating labels above notes
@@ -274,32 +281,49 @@ class RhythmGame:
     def run(self):
         clock = pygame.time.Clock()
 
-        if self.song:
-            self.song.play()
-        self.start_time_ms = pygame.time.get_ticks()
-
+        # Start countdown timer
+        self.countdown_start_time = pygame.time.get_ticks()
+        
         running = True
         while running:
-            # 1. Update Game Time
-            current_time = ((pygame.time.get_ticks() - self.start_time_ms) / 1000.0) + self.latency_offset
-
-            # 2. Process Real Audio for Visualizer using the song playback time
-            self.current_band_levels = self.audio_analyzer.process_audio(current_time)
+            current_ticks = pygame.time.get_ticks()
             
-            # 3. Handle Events
+            # Handle countdown
+            if self.countdown_active:
+                countdown_elapsed = (current_ticks - self.countdown_start_time) / 1000.0
+                if countdown_elapsed >= self.countdown_duration + 0.5:  # Extra 0.5s for "GO"
+                    # Countdown finished, start the song
+                    self.countdown_active = False
+                    if self.song:
+                        self.song.play()
+                    self.start_time_ms = pygame.time.get_ticks()
+                    current_time = 0.0
+                else:
+                    # During countdown, time doesn't advance
+                    current_time = -1.0
+            else:
+                # Normal gameplay - Update Game Time
+                current_time = ((current_ticks - self.start_time_ms) / 1000.0) + self.latency_offset
+
+            # Process Real Audio for Visualizer using the song playback time
+            if not self.countdown_active:
+                self.current_band_levels = self.audio_analyzer.process_audio(current_time)
+            
+            # Handle Events
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
 
                 if event.type == pygame.KEYDOWN:
-                    if event.key in KEYS:
+                    if event.key in KEYS and not self.countdown_active:
                         lane = KEYS.index(event.key)
                         self.check_hit(lane, current_time)
 
-            # 4. Update Game State
-            self.check_misses(current_time)
+            # Update Game State (only during active gameplay)
+            if not self.countdown_active:
+                self.check_misses(current_time)
             
-            # 5. Render
+            # Render
             self.render(current_time)
             clock.tick(60)
 
@@ -414,6 +438,47 @@ class RhythmGame:
             pygame.draw.rect(self.screen, color, (x, y, bar_w, h), border_radius=0)
         
         pygame.draw.line(self.screen, (40, 40, 50), (MAIN_WIDTH + padding, base_y), (WINDOW_WIDTH - padding, base_y), 1)
+
+    def _render_countdown(self):
+        """Render the countdown overlay (3, 2, 1, GO) with semi-transparent background."""
+        countdown_elapsed = (pygame.time.get_ticks() - self.countdown_start_time) / 1000.0
+        
+        # Determine countdown text
+        if countdown_elapsed < 1.0:
+            text = "3"
+            color = (255, 100, 100)  # Red
+        elif countdown_elapsed < 2.0:
+            text = "2"
+            color = (255, 200, 100)  # Orange
+        elif countdown_elapsed < 3.0:
+            text = "1"
+            color = (100, 255, 100)  # Green
+        elif countdown_elapsed < 3.5:
+            text = "GO!"
+            color = (100, 255, 255)  # Cyan
+        else:
+            return  # Countdown finished
+        
+        # Draw semi-transparent overlay across entire screen
+        overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT))
+        overlay.set_alpha(180)  # Semi-transparent
+        overlay.fill((20, 20, 30))  # Dark gray
+        self.screen.blit(overlay, (0, 0))
+        
+        # Draw countdown text in center
+        center_x = WINDOW_WIDTH / 2
+        center_y = WINDOW_HEIGHT / 2
+        
+        self._queue_text(
+            self._text_overlays,
+            self.countdown_font,
+            text,
+            color,
+            center_x,
+            center_y - 60,  # Offset for visual centering
+            center=True,
+            font_size=self.countdown_font_size
+        )
 
     def render(self, current_time):
         self._text_overlays = []
@@ -589,6 +654,10 @@ class RhythmGame:
         )
         # Sidebar: Visualizer (Live Spectrum Bars)
         self._render_visualizer()
+
+        # Render countdown overlay if active
+        if self.countdown_active:
+            self._render_countdown()
 
         scale, offset_x, offset_y = self._present_canvas()
         self._draw_text_overlays(scale, offset_x, offset_y)
