@@ -2,18 +2,13 @@ import librosa
 import numpy as np
 
 def generate_beatmap(path, difficulty=0.25, lanes=4):
-    """
-    Improved beatmap generator.
-    This version avoids a constant-tempo grid, preventing drift.
-    It uses actual onsets and energy peaks directly from the audio.
-    """
     y, sr = librosa.load(path, sr=22050, mono=True)
     if y.size == 0:
         return []
 
     duration = len(y) / sr
 
-    # --- Onset detection (REPLACES beat_track) ---
+    # --- Onset detection ---
     # These are the "real" rhythmic events, not tied to a constant tempo
     onset_env = librosa.onset.onset_strength(y=y, sr=sr)
     onset_frames = librosa.onset.onset_detect(
@@ -29,7 +24,7 @@ def generate_beatmap(path, difficulty=0.25, lanes=4):
     )
     onset_times = librosa.frames_to_time(onset_frames, sr=sr)
     
-    # --- RMS peaks (This section from your code is good) ---
+    # --- RMS peaks ---
     rms = librosa.feature.rms(y=y, frame_length=1024, hop_length=256, center=True)[0]
     times = librosa.frames_to_time(np.arange(len(rms)), sr=sr, hop_length=256, n_fft=1024)
     padded = np.concatenate(([-np.inf], rms, [-np.inf]))
@@ -46,15 +41,10 @@ def generate_beatmap(path, difficulty=0.25, lanes=4):
     base = [{"time": float(t), "energy": 0.0} for t in onset_times if 0.05 < t < duration - 0.05]
 
     # --- Merge all candidates ---
-    # We no longer have a "grid" to snap to. We use the real events.
     all_cands = base + peaks
 
-    # --- REMOVED: Beat tracking ---
-    # --- REMOVED: Build 16th-note grid ---
-    # --- REMOVED: Snap to nearest 16th-note ---
-
     # --- Remove duplicates (keep strongest energy) ---
-    # This is crucial. We merge notes that are very close (e.g., < 25ms)
+    # Merge notes that are very close (e.g., < 25ms)
     # by rounding to a temporary time grid, then picking the one with max energy.
     merged_map = {}
     # 0.025s = 25ms. Adjust if notes are too close or too far.
@@ -72,15 +62,15 @@ def generate_beatmap(path, difficulty=0.25, lanes=4):
     merged = sorted(merged_map.values(), key=lambda x: x["time"])
 
 
-    # --- Intensity -> lane mapping (no change) ---
+    # --- Intensity -> lane mapping ---
     energies = np.array([c.get("energy", 0.0) for c in merged])
     if energies.size and energies.max() > energies.min():
         norm = (energies - energies.min()) / (energies.max() - energies.min())
     else:
         norm = np.zeros_like(energies)
 
-    # --- Enforce difficulty spacing & lane rules (no change) ---
-    # The 'difficulty' param now correctly acts as a minimum time between notes
+    # --- Enforce difficulty spacing & lane rules ---
+    # The 'difficulty' param acts as a minimum time between notes
     notes = []
     last_t = -1e9
     last_lane = None
@@ -99,8 +89,7 @@ def generate_beatmap(path, difficulty=0.25, lanes=4):
         last_t = t
         last_lane = lane
 
-    # --- Remove stray notes at start/end (no change) ---
-    # This check is now slightly redundant but harmless
+    # --- Remove stray notes at start/end ---
     notes = [n for n in notes if 0.05 <= n["time"] <= duration - 0.05]
 
     return notes
