@@ -15,6 +15,7 @@ LANE_WIDTH = 120
 NOTE_WIDTH = 90
 NOTE_HEIGHT = 22
 NOTE_SPEED = 320         # pixels per second
+NOTE_ENTRY_MIN_Y = -NOTE_HEIGHT  # allow notes to begin just off-screen at the top
 HEADER_HEIGHT = 70
 FOOTER_HEIGHT = 70
 HIT_LINE_Y = 560         # y position where notes should be hit
@@ -38,9 +39,9 @@ MISS_THRESHOLD = 0.20
 # --- Audio Analyzer Constants ---
 CHUNK = 1024 # Samples per buffer
 RATE = 44100 # Sample rate
-# Frequency band ranges (Hz) for an 8-bar visualizer
+# Frequency band ranges (Hz) for a 16-bar visualizer
 # This maps frequency to the visual bars
-FREQ_BANDS = [60, 150, 400, 1000, 2500, 6000, 12000, 20000] 
+FREQ_BANDS = [60, 100, 150, 220, 330, 480, 700, 1000, 1450, 2100, 3000, 4300, 6200, 9000, 13000, 20000]
 # Note: FREQ_BANDS length determines the number of bars to draw
 # Minimum non-zero amplitude fed into log calculations to avoid domain errors
 MIN_BAND_AMPLITUDE = 1e-6
@@ -118,7 +119,7 @@ class AudioAnalyzer:
                 avg_amplitude = max(band_sum / band_count, MIN_BAND_AMPLITUDE)
 
                 # Apply a gain and clamp the result (visual normalization)
-                log_level = math.log10(avg_amplitude) * 0.50
+                log_level = math.log10(avg_amplitude) * 0.40
                 levels[i] = max(0.0, min(1.0, log_level)) 
                 
         return levels
@@ -137,8 +138,21 @@ class RhythmGame:
         pygame.mixer.pre_init(frequency=44100, size=-16, channels=2, buffer=512)
         pygame.init()
 
-        self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
         pygame.display.set_caption("RhythmGen")
+        display_info = pygame.display.Info()
+        display_w = display_info.current_w or WINDOW_WIDTH
+        display_h = display_info.current_h or WINDOW_HEIGHT
+        self.display_size = (display_w, display_h)
+
+        try:
+            self.display_surface = pygame.display.set_mode(self.display_size, pygame.FULLSCREEN)
+        except pygame.error:
+            # Fallback to windowed mode if fullscreen fails
+            self.display_surface = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+            self.display_size = (WINDOW_WIDTH, WINDOW_HEIGHT)
+
+        # Logical rendering surface keeps existing coordinate system
+        self.screen = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT)).convert()
 
         self.notes = beatmap[:]  # copy
         
@@ -157,15 +171,22 @@ class RhythmGame:
         self.combo = 0
         self.start_time_ms = 0
 
-        # Fonts
-        self.ui_font = pygame.font.Font(None, 30)
-        self.logo_font = pygame.font.Font(None, 56)
-        self.label_font = pygame.font.Font(None, 26)
-        self.feedback_font_small = pygame.font.Font(None, 28)
-        self.feedback_font_large = pygame.font.Font(None, 38)  # Perfect is larger
+        # Fonts (store base sizes so overlays can scale cleanly)
+        self.ui_font_size = 30
+        self.logo_font_size = 56
+        self.label_font_size = 26
+        self.feedback_font_small_size = 28
+        self.feedback_font_large_size = 38  # Perfect is larger
+
+        self.ui_font = pygame.font.Font(None, self.ui_font_size)
+        self.logo_font = pygame.font.Font(None, self.logo_font_size)
+        self.label_font = pygame.font.Font(None, self.label_font_size)
+        self.feedback_font_small = pygame.font.Font(None, self.feedback_font_small_size)
+        self.feedback_font_large = pygame.font.Font(None, self.feedback_font_large_size)
 
         # Visual feedback stores
         self.feedbacks = []  # floating labels above notes
+        self._text_overlays = []
         
         # Precompute subtle two-color gradient for main background
         self.background = self._create_vertical_gradient((25, 10, 50), (5, 5, 10))
@@ -288,8 +309,15 @@ class RhythmGame:
         pygame.draw.rect(self.screen, (35, 35, 45), eq_area_rect)
         pygame.draw.rect(self.screen, (85, 85, 110), eq_area_rect, 2)
 
-        eq_label = self.label_font.render("Spectrum Analyzer", True, (200, 200, 220))
-        self.screen.blit(eq_label, (MAIN_WIDTH + 16, WINDOW_HEIGHT - eq_area_height + 10))
+        self._queue_text(
+            self._text_overlays,
+            self.label_font,
+            "Spectrum Analyzer",
+            (200, 200, 220),
+            MAIN_WIDTH + 16,
+            WINDOW_HEIGHT - eq_area_height + 10,
+            font_size=self.label_font_size
+        )
 
         # --- Visualizer Logic using REAL audio data ---
         bars = len(self.current_band_levels)
@@ -343,17 +371,9 @@ class RhythmGame:
         pygame.draw.line(self.screen, (40, 40, 50), (MAIN_WIDTH + padding, base_y), (WINDOW_WIDTH - padding, base_y), 1)
 
     def render(self, current_time):
+        self._text_overlays = []
         # Main background (playfield only)
         self.screen.blit(self.background, (0, 0))
-
-        # Header bar with logo, confined above playfield
-        pygame.draw.rect(self.screen, (45, 45, 70), (0, 0, MAIN_WIDTH, HEADER_HEIGHT))
-        pygame.draw.line(self.screen, (120, 120, 200), (0, HEADER_HEIGHT - 1), (MAIN_WIDTH, HEADER_HEIGHT - 1), 1)
-        logo_text = self.logo_font.render("RhythmGen", True, (255, 0, 200))
-        glow_text = self.logo_font.render("RhythmGen", True, (0, 255, 200))
-        cx = MAIN_WIDTH // 2 - logo_text.get_width() // 2
-        self.screen.blit(glow_text, (cx + 2, 12))
-        self.screen.blit(logo_text, (cx, 10))
 
         # Lanes in playfield
         for i in range(LANE_COUNT):
@@ -368,11 +388,13 @@ class RhythmGame:
         pygame.draw.line(self.screen, (255, 255, 255), (0, HIT_LINE_Y), (MAIN_WIDTH, HIT_LINE_Y), 2)
 
         # Notes
+        min_note_y = NOTE_ENTRY_MIN_Y
+        max_note_y = PLAY_BOTTOM + NOTE_HEIGHT
         for note in list(self.notes):
             time_until_hit = note["time"] - current_time
             y = HIT_LINE_Y - time_until_hit * NOTE_SPEED
 
-            if y < PLAY_TOP - 60 or y > PLAY_BOTTOM + NOTE_HEIGHT:
+            if y < min_note_y or y > max_note_y:
                 continue
 
             t = 0.0
@@ -383,12 +405,45 @@ class RhythmGame:
 
             pygame.draw.rect(self.screen, color, self._note_rect(note["lane"], y), border_radius=5)
 
+        # Header bar with logo drawn after notes so it always sits on top
+        pygame.draw.rect(self.screen, (45, 45, 70), (0, 0, MAIN_WIDTH, HEADER_HEIGHT))
+        pygame.draw.line(self.screen, (120, 120, 200), (0, HEADER_HEIGHT - 1), (MAIN_WIDTH, HEADER_HEIGHT - 1), 1)
+        center_x = MAIN_WIDTH / 2
+        self._queue_text(
+            self._text_overlays,
+            self.logo_font,
+            "RhythmGen",
+            (0, 255, 200),
+            center_x + 2,
+            12,
+            center=True,
+            font_size=self.logo_font_size
+        )
+        self._queue_text(
+            self._text_overlays,
+            self.logo_font,
+            "RhythmGen",
+            (255, 0, 200),
+            center_x,
+            10,
+            center=True,
+            font_size=self.logo_font_size
+        )
+
         # Floating feedback labels
         for fb in self.feedbacks[:]:
             font = self.feedback_font_large if fb["big"] else self.feedback_font_small
-            surf = font.render(fb["text"], True, fb["color"])
-            surf.set_alpha(max(0, fb["alpha"]))
-            self.screen.blit(surf, (fb["x"] - surf.get_width() // 2, fb["y"]))
+            self._queue_text(
+                self._text_overlays,
+                font,
+                fb["text"],
+                fb["color"],
+                fb["x"],
+                fb["y"],
+                center=True,
+                alpha=max(0, fb["alpha"]),
+                font_size=self.feedback_font_large_size if fb["big"] else self.feedback_font_small_size
+            )
             fb["y"] -= fb["rise"]       
             fb["alpha"] -= 7            
             fb["life"] -= 1
@@ -400,8 +455,15 @@ class RhythmGame:
         pygame.draw.rect(self.screen, (40, 40, 55), footer_rect)
         pygame.draw.rect(self.screen, (90, 90, 120), footer_rect, 2)
 
-        label = self.label_font.render("Progress", True, (200, 200, 220))
-        self.screen.blit(label, (12, WINDOW_HEIGHT - FOOTER_HEIGHT + 10))
+        self._queue_text(
+            self._text_overlays,
+            self.label_font,
+            "Progress",
+            (200, 200, 220),
+            12,
+            WINDOW_HEIGHT - FOOTER_HEIGHT + 10,
+            font_size=self.label_font_size
+        )
 
         # Progress bar inside footer
         song_len = self.song.get_length() if self.song else 0
@@ -422,12 +484,108 @@ class RhythmGame:
         pygame.draw.rect(self.screen, (35, 35, 45), sidebar_header)
         pygame.draw.rect(self.screen, (85, 85, 110), sidebar_header, 2)
 
-        score_text = self.ui_font.render(f"Score: {self.score}", True, (230, 230, 240))
-        combo_text = self.ui_font.render(f"Combo: {self.combo}", True, (230, 230, 240))
-        self.screen.blit(score_text, (MAIN_WIDTH + 16, 24))
-        self.screen.blit(combo_text, (MAIN_WIDTH + 16, 70))
+        self._queue_text(
+            self._text_overlays,
+            self.ui_font,
+            f"Score: {self.score}",
+            (230, 230, 240),
+            MAIN_WIDTH + 16,
+            24,
+            font_size=self.ui_font_size
+        )
+        self._queue_text(
+            self._text_overlays,
+            self.ui_font,
+            f"Combo: {self.combo}",
+            (230, 230, 240),
+            MAIN_WIDTH + 16,
+            70,
+            font_size=self.ui_font_size
+        )
 
         # Sidebar: Visualizer (Live Spectrum Bars)
         self._render_visualizer()
+
+        scale, offset_x, offset_y = self._present_canvas()
+        self._draw_text_overlays(scale, offset_x, offset_y)
+
+    def _present_canvas(self):
+        display_w, display_h = self.display_size
+        scale_to_height = display_h / WINDOW_HEIGHT
+        scaled_w = int(round(WINDOW_WIDTH * scale_to_height))
+        scaled_h = display_h
+
+        use_height_scaling = scaled_w <= display_w and scale_to_height > 0
+
+        if not use_height_scaling:
+            scale_to_width = display_w / WINDOW_WIDTH
+            scaled_w = display_w
+            scaled_h = int(round(WINDOW_HEIGHT * scale_to_width))
+            scale = scale_to_width
+        else:
+            scale = scale_to_height
+
+        integer_multiple = math.isclose(scale, round(scale)) and scale >= 1
+        integer_multiple = integer_multiple or (
+            scaled_w % WINDOW_WIDTH == 0 and scaled_h % WINDOW_HEIGHT == 0
+        )
+
+        if scaled_w == WINDOW_WIDTH and scaled_h == WINDOW_HEIGHT:
+            canvas = self.screen
+        elif integer_multiple:
+            canvas = pygame.transform.scale(self.screen, (scaled_w, scaled_h))
+        else:
+            canvas = pygame.transform.smoothscale(self.screen, (scaled_w, scaled_h))
+
+        offset_x = (display_w - scaled_w) // 2
+        offset_y = (display_h - scaled_h) // 2
+
+        self.display_surface.fill((0, 0, 0))
+        self.display_surface.blit(canvas, (offset_x, offset_y))
+
+        scale_factor = scaled_w / WINDOW_WIDTH if WINDOW_WIDTH else 1.0
+        return scale_factor, offset_x, offset_y
+
+    def _queue_text(self, overlay_list, font, text, color, x, y, *, center=False, alpha=255, font_size=None, font_path=None):
+        overlay_list.append({
+            "font": font,
+            "text": text,
+            "color": color,
+            "x": x,
+            "y": y,
+            "center": center,
+            "alpha": alpha,
+            "font_size": font_size,
+            "font_path": font_path
+        })
+
+    def _draw_text_overlays(self, scale, offset_x, offset_y):
+        if not hasattr(self, "_text_overlays"):
+            return
+        for entry in self._text_overlays:
+            font = entry["font"]
+            text = entry["text"]
+            color = entry["color"]
+            alpha = entry["alpha"]
+            font_size = entry.get("font_size")
+            font_path = entry.get("font_path")
+
+            effective_font = font
+            if scale != 1.0 and font_size:
+                scaled_size = max(1, int(round(font_size * scale)))
+                effective_font = pygame.font.Font(font_path, scaled_size)
+
+            surf = effective_font.render(text, True, color)
+            if alpha < 255:
+                surf = surf.copy()
+                surf.set_alpha(alpha)
+
+            draw_x = offset_x + entry["x"] * scale
+            draw_y = offset_y + entry["y"] * scale
+
+            if entry["center"]:
+                draw_x -= surf.get_width() / 2
+            draw_pos = (int(round(draw_x)), int(round(draw_y)))
+            self.display_surface.blit(surf, draw_pos)
 
         pygame.display.flip()
